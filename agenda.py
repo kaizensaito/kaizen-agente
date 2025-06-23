@@ -9,8 +9,11 @@ def criar_evento_agenda(titulo, data_inicio, data_fim, descricao):
         "end": data_fim,
         "description": descricao
     }
+    headers = {'Content-Type': 'application/json'}
     try:
-        response = requests.post(APPS_SCRIPT_URL, json=payload)
+        response = requests.post(APPS_SCRIPT_URL, json=payload, headers=headers)
+        print(f"Status code: {response.status_code}")
+        print(f"Response text: {response.text}")
         if response.status_code == 200:
             print("Evento criado com sucesso!")
         else:
