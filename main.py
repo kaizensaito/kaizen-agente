@@ -1,9 +1,10 @@
-import os
-from flask import Flask
+from flask import Flask, request, jsonify
 from threading import Thread
 from twilio.rest import Client
+import os
 import time
 from agenda import criar_evento_agenda
+import datetime
 
 app = Flask(__name__)
 
@@ -28,24 +29,46 @@ def enviar_whatsapp():
 
 def background_task():
     enviar_whatsapp()
-    # Exemplo: criar evento agendado toda vez que o bot inicia
+
+    # Criar evento teste para amanhã
+    amanha = datetime.date.today() + datetime.timedelta(days=1)
+    inicio = amanha.strftime("%Y-%m-%d") + "T00:00:00"
+    fim = amanha.strftime("%Y-%m-%d") + "T23:59:59"
+
     criar_evento_agenda(
-        "Plantão Motiva Rodoanel",
-        "2025-06-25T06:00:00",
-        "2025-06-26T06:00:00",
-        "Plantão de 24h no Motiva Rodoanel"
+        "Evento teste Kaizen",
+        inicio,
+        fim,
+        "Evento automático criado para teste"
     )
+
     while True:
         agora = time.localtime()
         if agora.tm_hour == 6 and agora.tm_min == 0:
             enviar_whatsapp()
-            # Pode criar evento aqui se quiser automático todo dia
             time.sleep(60)
         time.sleep(10)
 
 @app.route("/")
 def home():
     return "✅ Kaizen agente em operação contínua."
+
+@app.route("/criar_evento", methods=["POST"])
+def criar_evento_endpoint():
+    data = request.json
+    titulo = data.get("title")
+    inicio = data.get("start")
+    fim = data.get("end")
+    descricao = data.get("description")
+
+    if not all([titulo, inicio, fim]):
+        return jsonify({"error": "title, start e end são obrigatórios"}), 400
+
+    try:
+        criar_evento_agenda(titulo, inicio, fim, descricao or "")
+        return jsonify({"status": "evento criado com sucesso"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     thread = Thread(target=background_task)
