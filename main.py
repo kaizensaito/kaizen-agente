@@ -5,6 +5,7 @@ import time
 
 app = Flask(__name__)
 
+# Insira diretamente aqui seus dados da Twilio
 TWILIO_ACCOUNT_SID = "ACcc5bad10c7432eb233ec23700f0ad0a7"
 TWILIO_AUTH_TOKEN = "2966b2282ac5c1233feb3cfb6a52b1b4"
 WHATSAPP_FROM = "whatsapp:+14155238886"
@@ -15,14 +16,13 @@ client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 def enviar_whatsapp():
     for numero in DESTINOS:
         message = client.messages.create(
-            body="🟢 Kaizen teste imediato: canal WhatsApp ativo.",
+            body="🟢 Kaizen teste: variável de ambiente isolada.",
             from_=WHATSAPP_FROM,
             to=numero
         )
         print(f"Mensagem enviada para {numero} com SID: {message.sid}")
 
 def background_task():
-    # Envia mensagem no start
     enviar_whatsapp()
     while True:
         agora = time.localtime()
@@ -33,10 +33,11 @@ def background_task():
 
 @app.route("/")
 def home():
-    return "Kaizen agente ativo!"
+    return "Kaizen agente ativo (com credenciais hardcoded)"
 
 if __name__ == "__main__":
     thread = Thread(target=background_task)
     thread.daemon = True
     thread.start()
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
