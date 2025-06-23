@@ -6,9 +6,9 @@ import time
 
 app = Flask(__name__)
 
-# Insira diretamente aqui seus dados da Twilio
-TWILIO_ACCOUNT_SID = "ACc877afe719c5e6c5b66df5de9c2c26aa"
-TWILIO_AUTH_TOKEN = "a7f27cc30999f1af6e856033681ba34f"
+# Credenciais seguras via variáveis de ambiente
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"
 DESTINOS = ["whatsapp:+5511940217504", "whatsapp:+5511934385115"]
 
@@ -16,12 +16,15 @@ client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 def enviar_whatsapp():
     for numero in DESTINOS:
-        message = client.messages.create(
-            body="🟢 Kaizen teste imediato: canal WhatsApp ativo.",
-            from_=WHATSAPP_FROM,
-            to=numero
-        )
-        print(f"Mensagem enviada para {numero} com SID: {message.sid}")
+        try:
+            message = client.messages.create(
+                body="🟢 Kaizen ativo e operacional via WhatsApp.",
+                from_=WHATSAPP_FROM,
+                to=numero
+            )
+            print(f"Mensagem enviada para {numero} com SID: {message.sid}")
+        except Exception as e:
+            print(f"Falha ao enviar mensagem para {numero}: {e}")
 
 def background_task():
     enviar_whatsapp()
@@ -34,11 +37,11 @@ def background_task():
 
 @app.route("/")
 def home():
-    return "Kaizen agente ativo (com credenciais hardcoded)"
+    return "✅ Kaizen agente em operação contínua."
 
 if __name__ == "__main__":
     thread = Thread(target=background_task)
     thread.daemon = True
     thread.start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
