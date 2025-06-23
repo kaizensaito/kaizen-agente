@@ -17,7 +17,7 @@ client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 def enviar_whatsapp():
     for numero in DESTINOS:
         message = client.messages.create(
-            body="🟢 Kaizen teste: variável de ambiente isolada.",
+            body="🟢 Kaizen teste imediato: canal WhatsApp ativo.",
             from_=WHATSAPP_FROM,
             to=numero
         )
