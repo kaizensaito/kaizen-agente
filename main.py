@@ -3,10 +3,10 @@ from flask import Flask
 from threading import Thread
 from twilio.rest import Client
 import time
+from agenda import criar_evento_agenda
 
 app = Flask(__name__)
 
-# Credenciais seguras via variáveis de ambiente
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"
@@ -28,10 +28,18 @@ def enviar_whatsapp():
 
 def background_task():
     enviar_whatsapp()
+    # Exemplo: criar evento agendado toda vez que o bot inicia
+    criar_evento_agenda(
+        "Plantão Motiva Rodoanel",
+        "2025-06-25T06:00:00",
+        "2025-06-26T06:00:00",
+        "Plantão de 24h no Motiva Rodoanel"
+    )
     while True:
         agora = time.localtime()
         if agora.tm_hour == 6 and agora.tm_min == 0:
             enviar_whatsapp()
+            # Pode criar evento aqui se quiser automático todo dia
             time.sleep(60)
         time.sleep(10)
 
