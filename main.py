@@ -9,6 +9,7 @@ app = Flask(__name__)
 # Insira diretamente aqui seus dados da Twilio
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+
 WHATSAPP_FROM = "whatsapp:+14155238886"
 DESTINOS = ["whatsapp:+5511940217504", "whatsapp:+5511934385115"]
 
