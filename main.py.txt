@@ -1,0 +1,25 @@
+from twilio.rest import Client
+import time
+
+TWILIO_ACCOUNT_SID = "ACcc5bad10c7432eb233ec23700f0ad0a7"
+TWILIO_AUTH_TOKEN = "2966b2282ac5c1233feb3cfb6a52b1b4"
+WHATSAPP_FROM = "whatsapp:+14155238886"
+DESTINOS = ["whatsapp:+5511940217504", "whatsapp:+5511934385115"]
+
+client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+def enviar_whatsapp():
+    for numero in DESTINOS:
+        message = client.messages.create(
+            body="🟢 Kaizen teste imediato: canal WhatsApp ativo.",
+            from_=WHATSAPP_FROM,
+            to=numero
+        )
+        print(f"Mensagem enviada para {numero} com SID: {message.sid}")
+
+while True:
+    agora = time.localtime()
+    if agora.tm_hour == 6 and agora.tm_min == 0:
+        enviar_whatsapp()
+        time.sleep(60)  # Espera pra não mandar múltiplas vezes no mesmo minuto
+    time.sleep(10)
