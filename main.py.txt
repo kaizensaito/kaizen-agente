@@ -1,5 +1,9 @@
+from flask import Flask
+from threading import Thread
 from twilio.rest import Client
 import time
+
+app = Flask(__name__)
 
 TWILIO_ACCOUNT_SID = "ACcc5bad10c7432eb233ec23700f0ad0a7"
 TWILIO_AUTH_TOKEN = "2966b2282ac5c1233feb3cfb6a52b1b4"
@@ -17,13 +21,22 @@ def enviar_whatsapp():
         )
         print(f"Mensagem enviada para {numero} com SID: {message.sid}")
 
-if __name__ == "__main__":
-    # Enviar mensagem assim que iniciar
+def background_task():
+    # Envia mensagem no start
     enviar_whatsapp()
-
     while True:
         agora = time.localtime()
         if agora.tm_hour == 6 and agora.tm_min == 0:
             enviar_whatsapp()
-            time.sleep(60)  # evita disparo múltiplo
+            time.sleep(60)
         time.sleep(10)
+
+@app.route("/")
+def home():
+    return "Kaizen agente ativo!"
+
+if __name__ == "__main__":
+    thread = Thread(target=background_task)
+    thread.daemon = True
+    thread.start()
+    app.run(host="0.0.0.0", port=10000)
