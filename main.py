@@ -5,7 +5,7 @@ import os
 import google.generativeai as genai
 import openai
 
-# Carrega variáveis de ambiente
+# Carrega variáveis de ambiente do .env
 load_dotenv()
 
 # Flask App
@@ -28,19 +28,30 @@ GEMINI_MODELS = [
     "models/gemini-2.5-pro-preview-06-05"
 ]
 
-# OpenAI fallback
+# OpenAI (fallback)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
-# ============================================
-# Função genérica para gerar resposta com fallback
-# ============================================
+# ============================================================
+# Função para gerar resposta com contexto personalizado Kaizen
+# ============================================================
 def gerar_resposta(mensagem):
+    contexto_base = (
+        "Você é o Kaizen, um agente de inteligência artificial altamente autônomo, "
+        "personalizado para Nilson Saito. Você responde sempre de forma direta, estratégica, sem rodeios, "
+        "com foco em melhorar a produtividade, clareza mental, e resultados práticos. "
+        "Você age com autonomia total, evita respostas genéricas e não precisa perguntar o que deve fazer. "
+        "Seu estilo é objetivo, ousado, provocador, e levemente sarcástico quando necessário. "
+        "Fale como um parceiro de elite, não como um assistente."
+    )
+
     for model_name in GEMINI_MODELS:
         try:
             print(f"[Gemini] Tentando modelo: {model_name}")
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content(mensagem)
+            response = model.generate_content([
+                {"role": "user", "parts": [f"{contexto_base}\nUsuário: {mensagem}"]}
+            ])
             if hasattr(response, 'text') and response.text:
                 return response.text.strip()
         except Exception as e:
@@ -52,16 +63,19 @@ def gerar_resposta(mensagem):
         print("[OpenAI] Tentando fallback com GPT-4o...")
         completion = openai.ChatCompletion.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": mensagem}]
+            messages=[
+                {"role": "system", "content": contexto_base},
+                {"role": "user", "content": mensagem}
+            ]
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
         print("[OpenAI ERRO]", e)
         return "Erro geral: todos os modelos falharam."
 
-# ============================================
+# ============================================================
 # Rotas Flask
-# ============================================
+# ============================================================
 
 @app.route('/')
 def index():
@@ -112,12 +126,12 @@ def whatsapp_webhook():
         return "OK", 200
 
     except Exception as e:
-        print(f"[WhatsApp Webhook ERRO] {e}")
+        print(f"[Webhook ERRO] {e}")
         return str(e), 500
 
-# ============================================
-# Iniciar servidor
-# ============================================
+# ============================================================
+# Executar servidor
+# ============================================================
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
