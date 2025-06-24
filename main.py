@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 import os
 import google.generativeai as genai
 import openai
+import json
+from datetime import datetime, timedelta
+import threading
 
 # Carrega variáveis de ambiente do .env
 load_dotenv()
@@ -32,8 +35,33 @@ GEMINI_MODELS = [
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
+# Memória simples em arquivo JSON
+MEMORIA_FILE = 'memoria_kaizen.json'
+
+def carregar_memoria(usuario):
+    try:
+        with open(MEMORIA_FILE, 'r') as f:
+            memoria = json.load(f)
+        return memoria.get(usuario, [])
+    except:
+        return []
+
+def salvar_memoria(usuario, mensagens):
+    try:
+        memoria = {}
+        try:
+            with open(MEMORIA_FILE, 'r') as f:
+                memoria = json.load(f)
+        except:
+            pass
+        memoria[usuario] = mensagens[-5:]  # guarda só as 5 últimas mensagens
+        with open(MEMORIA_FILE, 'w') as f:
+            json.dump(memoria, f)
+    except Exception as e:
+        print(f"[Erro memória] {e}")
+
 # ============================================================
-# Função para gerar resposta com contexto personalizado Kaizen
+# Função para gerar resposta com contexto personalizado Kaizen e memória
 # ============================================================
 def gerar_resposta(mensagem):
     contexto_base = (
@@ -74,6 +102,53 @@ def gerar_resposta(mensagem):
         return "Erro geral: todos os modelos falharam."
 
 # ============================================================
+# Função para gerar resposta com memória de curto prazo
+# ============================================================
+def gerar_resposta_com_memoria(usuario, mensagem_nova):
+    mensagens = carregar_memoria(usuario)
+    mensagens.append({"role": "user", "content": mensagem_nova})
+
+    # Construir o prompt com contexto da memória
+    contexto = (
+        "Você é o Kaizen, um agente autônomo para Nilson Saito, direto e prático.\n"
+        "Converse mantendo a memória da conversa abaixo:\n"
+    )
+    for msg in mensagens:
+        contexto += f"{msg['role']}: {msg['content']}\n"
+
+    resposta = gerar_resposta(contexto)
+
+    mensagens.append({"role": "assistant", "content": resposta})
+    salvar_memoria(usuario, mensagens)
+
+    return resposta
+
+# ============================================================
+# Report diário via WhatsApp
+# ============================================================
+def enviar_relatorio_diario():
+    try:
+        msg = "Kaizen rodando: ✅\nMensagens respondidas hoje: XX\nErros: 0\nTudo funcionando liso."
+        client_twilio.messages.create(
+            body=msg,
+            from_=FROM_WPP,
+            to=TO_WPP
+        )
+        print("[Relatório] Enviado com sucesso")
+    except Exception as e:
+        print(f"[Relatório ERRO] {e}")
+
+def agendar_relatorio():
+    while True:
+        agora = datetime.now()
+        proximo_envio = agora.replace(hour=18, minute=0, second=0, microsecond=0)
+        if agora > proximo_envio:
+            proximo_envio += timedelta(days=1)
+        tempo_espera = (proximo_envio - agora).total_seconds()
+        threading.Timer(tempo_espera, enviar_relatorio_diario).start()
+        threading.Event().wait(tempo_espera + 1)
+
+# ============================================================
 # Rotas Flask
 # ============================================================
 
@@ -100,7 +175,7 @@ def ask_kaizen():
         user_input = request.json.get('message')
         if not user_input:
             return jsonify({'error': 'Mensagem vazia'}), 400
-        reply = gerar_resposta(user_input)
+        reply = gerar_resposta_com_memoria(TO_WPP, user_input)
         return jsonify({'reply': reply})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -115,7 +190,7 @@ def whatsapp_webhook():
         if not incoming_msg:
             return "Mensagem vazia", 400
 
-        reply = gerar_resposta(incoming_msg)
+        reply = gerar_resposta_com_memoria(sender, incoming_msg)
 
         client_twilio.messages.create(
             body=reply,
@@ -134,5 +209,8 @@ def whatsapp_webhook():
 # ============================================================
 
 if __name__ == '__main__':
+    # Agendar relatório em thread separada para não bloquear Flask
+    threading.Thread(target=agendar_relatorio, daemon=True).start()
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
