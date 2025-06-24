@@ -1,5 +1,5 @@
-flask
-twilio
-requests
+flask==3.1.1
+twilio==9.6.3
+requests==2.32.4
 pytz
 openai
