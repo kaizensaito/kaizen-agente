@@ -5,3 +5,4 @@ pytz
 openai
 google-auth
 google-api-python-client
+python-dotenv==1.0.1
