@@ -1,55 +1,85 @@
+from flask import Flask, request
+from datetime import datetime, timedelta
 import os
-from flask import Flask
-from threading import Thread
-from twilio.rest import Client
-import time
-from agenda import criar_evento_agenda
+import pytz
+import logging
+import openai
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# === CONFIGURAÇÕES ===
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Deve estar definida no Render
+
+# Google Calendar
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+SERVICE_ACCOUNT_FILE = 'credentials.json'
+CALENDAR_ID = 'nilson.saito@gmail.com'  # Agenda certa agora
+
+# Timezone Brasil
+TIMEZONE = 'America/Sao_Paulo'
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-WHATSAPP_FROM = "whatsapp:+14155238886"
-DESTINOS = ["whatsapp:+5511940217504", "whatsapp:+5511934385115"]
 
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# === Funções ===
 
-def enviar_whatsapp():
-    for numero in DESTINOS:
-        try:
-            message = client.messages.create(
-                body="🟢 Kaizen ativo e operacional via WhatsApp.",
-                from_=WHATSAPP_FROM,
-                to=numero
-            )
-            print(f"Mensagem enviada para {numero} com SID: {message.sid}")
-        except Exception as e:
-            print(f"Falha ao enviar mensagem para {numero}: {e}")
+def usar_chatgpt(prompt):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        logging.error(f"[GPT ERROR] {e}")
+        return "Erro com o ChatGPT"
 
-def background_task():
-    enviar_whatsapp()
-    # Exemplo: criar evento agendado toda vez que o bot inicia
-    criar_evento_agenda(
-        "Plantão Motiva Rodoanel",
-        "2025-06-25T06:00:00",
-        "2025-06-26T06:00:00",
-        "Plantão de 24h no Motiva Rodoanel"
-    )
-    while True:
-        agora = time.localtime()
-        if agora.tm_hour == 6 and agora.tm_min == 0:
-            enviar_whatsapp()
-            # Pode criar evento aqui se quiser automático todo dia
-            time.sleep(60)
-        time.sleep(10)
+def criar_evento_google(titulo, data, hora_inicio, hora_fim):
+    try:
+        credentials = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+        service = build('calendar', 'v3', credentials=credentials)
 
-@app.route("/")
-def home():
-    return "✅ Kaizen agente em operação contínua."
+        inicio = datetime.strptime(f"{data} {hora_inicio}", "%Y-%m-%d %H:%M")
+        fim = datetime.strptime(f"{data} {hora_fim}", "%Y-%m-%d %H:%M")
 
-if __name__ == "__main__":
-    thread = Thread(target=background_task)
-    thread.daemon = True
-    thread.start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+        evento = {
+            'summary': titulo,
+            'start': {'dateTime': inicio.isoformat(), 'timeZone': TIMEZONE},
+            'end': {'dateTime': fim.isoformat(), 'timeZone': TIMEZONE},
+        }
+
+        evento = service.events().insert(calendarId=CALENDAR_ID, body=evento).execute()
+        logging.info(f"[CALENDAR] Evento criado: {evento.get('htmlLink')}")
+        return evento.get('htmlLink')
+    except Exception as e:
+        logging.error(f"[CALENDAR ERROR] {e}")
+        return None
+
+@app.route('/criar_evento', methods=['POST'])
+def criar_evento():
+    dados = request.json
+    titulo = dados.get('titulo', 'Evento')
+    data = dados.get('data')
+    hora_inicio = dados.get('hora_inicio')
+    hora_fim = dados.get('hora_fim')
+
+    if not all([data, hora_inicio, hora_fim]):
+        return {"erro": "Dados incompletos"}, 400
+
+    link = criar_evento_google(titulo, data, hora_inicio, hora_fim)
+    if link:
+        return {"mensagem": "Evento criado com sucesso", "link": link}
+    else:
+        return {"erro": "Falha ao criar evento"}, 500
+
+@app.route('/')
+def index():
+    return "Kaizen operacional com GPT-3.5 turbo e acesso à agenda Nilson."
+
+
+# === Execução local
+if __name__ == '__main__':
+    app.run(debug=False, host='0.0.0.0', port=10000)
