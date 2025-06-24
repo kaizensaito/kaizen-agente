@@ -4,10 +4,10 @@ from dotenv import load_dotenv
 import os
 import logging
 from concurrent.futures import ThreadPoolExecutor
+import time
 import atexit
 import google.generativeai as genai
 
-# Carrega variáveis
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
@@ -32,10 +32,14 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Usa o modelo correto agora:
-model = genai.GenerativeModel("models/gemini-1.5-pro")
+# Lista de modelos para fallback automático
+MODELOS_GEMINI = [
+    "models/gemini-1.5-flash",
+    "models/text-bison-001",
+    "models/gemini-1.5-pro"
+]
 
-executor = ThreadPoolExecutor(max_workers=4)
+executor = ThreadPoolExecutor(max_workers=2)
 
 def send_whatsapp_background(msg, to_wpp):
     try:
@@ -50,18 +54,31 @@ def send_whatsapp_background(msg, to_wpp):
         logger.error(f"Erro WhatsApp: {e}")
         return {'status': 'error', 'error': str(e)}
 
-def ask_gemini_background(user_input):
-    try:
-        logger.info(f"[BG] Pergunta: {user_input}")
-        response = model.generate_content(user_input)
-        return {'reply': response.text}
-    except Exception as e:
-        logger.error(f"Erro Gemini: {e}")
-        return {'error': str(e)}
+def ask_gemini_with_fallback(user_input, retries=3, delay=10):
+    for modelo in MODELOS_GEMINI:
+        for attempt in range(1, retries + 1):
+            try:
+                logger.info(f"Tentando modelo {modelo}, tentativa {attempt}")
+                model = genai.GenerativeModel(modelo)
+                response = model.generate_content(user_input)
+                return {'reply': response.text}
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"Erro no modelo {modelo} (tentativa {attempt}): {err_msg}")
+
+                if "429" in err_msg or "quota" in err_msg.lower():
+                    logger.info(f"Limite do modelo {modelo} estourado, esperando {delay}s e tentando novamente...")
+                    time.sleep(delay)
+                else:
+                    # Se for erro não relacionado a quota, já para aqui
+                    return {'error': err_msg}
+        logger.info(f"Modelo {modelo} esgotou tentativas, tentando próximo modelo...")
+
+    return {'error': 'Todos os modelos falharam ou estouraram limite.'}
 
 @app.route('/')
 def index():
-    return "✅ Kaizen rodando com Gemini 1.5 Pro + Twilio"
+    return "✅ Kaizen rodando com fallback Gemini + Twilio"
 
 @app.route('/send_whatsapp', methods=['POST'])
 def send_whatsapp():
@@ -85,8 +102,8 @@ def ask_kaizen():
     if not user_input:
         return jsonify({'error': 'Mensagem vazia'}), 400
 
-    future = executor.submit(ask_gemini_background, user_input)
-    result = future.result(timeout=20)
+    future = executor.submit(ask_gemini_with_fallback, user_input)
+    result = future.result(timeout=60)
     status_code = 200 if 'reply' in result else 500
     return jsonify(result), status_code
 
@@ -100,4 +117,3 @@ if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"Iniciando app na porta {port}")
     app.run(host='0.0.0.0', port=port, threaded=True)
-
