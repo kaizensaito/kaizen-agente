@@ -1,39 +1,36 @@
-from flask import Flask, request, jsonify
 import os
-import openai
+import requests
+from dotenv import load_dotenv
 
-app = Flask(__name__)
+# Carrega variáveis do .env
+load_dotenv()
 
-# Configura sua chave OpenAI pela variável de ambiente
-openai.api_key = os.getenv("OPENAI_API_KEY")
+API_URL = "https://kaizen-agente.onrender.com/ask"
+HEADERS = {"Content-Type": "application/json"}
 
-if not openai.api_key:
-    raise RuntimeError("Chave OpenAI não configurada. Defina a variável de ambiente OPENAI_API_KEY.")
-
-@app.route("/")
-def home():
-    return "Kaizen agente backend está no ar!"
-
-@app.route("/ask", methods=["POST"])
-def ask():
-    data = request.json
-    if not data or "prompt" not in data:
-        return jsonify({"error": "Faltando campo 'prompt' no JSON"}), 400
-
-    prompt = data["prompt"]
-
+def enviar_mensagem(mensagem):
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            temperature=0.7,
-        )
-        answer = response.choices[0].message.content.strip()
-        return jsonify({"response": answer})
-    except Exception as e:
-        return jsonify({"error": f"Erro na API OpenAI: {str(e)}"}), 500
+        response = requests.post(API_URL, json={"message": mensagem}, headers=HEADERS)
+        response.raise_for_status()
+        return response.json().get("response", "[Resposta vazia do Kaizen]")
+    except requests.exceptions.HTTPError as errh:
+        return f"Erro HTTP: {errh}"
+    except requests.exceptions.ConnectionError as errc:
+        return f"Erro de conexão: {errc}"
+    except requests.exceptions.Timeout as errt:
+        return f"Erro de timeout: {errt}"
+    except requests.exceptions.RequestException as err:
+        return f"Erro na requisição: {err}"
+
+def main():
+    print("Kaizen CLI Chat - Digite 'sair' para encerrar\n")
+    while True:
+        msg = input("Você: ").strip()
+        if msg.lower() in ['sair', 'exit']:
+            print("Encerrando a sessão com Kaizen.")
+            break
+        resposta = enviar_mensagem(msg)
+        print(f"Kaizen: {resposta}\n")
 
 if __name__ == "__main__":
-    # Rodar na porta 10000 para compatibilidade com o Render (ou modifique conforme precisar)
-    app.run(host="0.0.0.0", port=10000)
+    main()
