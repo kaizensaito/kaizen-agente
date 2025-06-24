@@ -1,36 +1,33 @@
+from flask import Flask, request, jsonify
+from twilio.rest import Client
 import os
-import requests
-from dotenv import load_dotenv
 
-# Carrega variáveis do .env
-load_dotenv()
+app = Flask(__name__)
 
-API_URL = "https://kaizen-agente.onrender.com/ask"
-HEADERS = {"Content-Type": "application/json"}
+# Credenciais Twilio - garanta que estão certinhas nas variáveis de ambiente
+account_sid = os.getenv('TWILIO_ACCOUNT_SID')
+auth_token = os.getenv('TWILIO_AUTH_TOKEN')
+client = Client(account_sid, auth_token)
 
-def enviar_mensagem(mensagem):
+# Números
+from_whatsapp_number = 'whatsapp:+14155238886'  # Número sandbox Twilio padrão
+to_whatsapp_number = 'whatsapp:+55XXXXXXXXXXX'  # Seu número com código do Brasil
+
+@app.route('/send_whatsapp', methods=['POST'])
+def send_whatsapp():
     try:
-        response = requests.post(API_URL, json={"message": mensagem}, headers=HEADERS)
-        response.raise_for_status()
-        return response.json().get("response", "[Resposta vazia do Kaizen]")
-    except requests.exceptions.HTTPError as errh:
-        return f"Erro HTTP: {errh}"
-    except requests.exceptions.ConnectionError as errc:
-        return f"Erro de conexão: {errc}"
-    except requests.exceptions.Timeout as errt:
-        return f"Erro de timeout: {errt}"
-    except requests.exceptions.RequestException as err:
-        return f"Erro na requisição: {err}"
+        message = client.messages.create(
+            body="Mensagem teste funcionando!",
+            from_=from_whatsapp_number,
+            to=to_whatsapp_number
+        )
+        return jsonify({'status': 'success', 'sid': message.sid})
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
-def main():
-    print("Kaizen CLI Chat - Digite 'sair' para encerrar\n")
-    while True:
-        msg = input("Você: ").strip()
-        if msg.lower() in ['sair', 'exit']:
-            print("Encerrando a sessão com Kaizen.")
-            break
-        resposta = enviar_mensagem(msg)
-        print(f"Kaizen: {resposta}\n")
+@app.route('/')
+def index():
+    return "Kaizen rodando - versão WhatsApp OK"
 
 if __name__ == "__main__":
-    main()
+    app.run(host='0.0.0.0', port=10000)
