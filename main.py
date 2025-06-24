@@ -15,7 +15,7 @@ logger = logging.getLogger("kaizen_app")
 
 app = Flask(__name__)
 
-# Twilio
+# Twilio config
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER") or "whatsapp:+14155238886"
@@ -25,17 +25,18 @@ if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
 
 client_twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# Gemini (Google)
+# Gemini config
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise Exception("Erro: Gemini API Key ausente.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-pro")
+
+# Usa o modelo correto agora:
+model = genai.GenerativeModel("models/gemini-1.5-pro")
 
 executor = ThreadPoolExecutor(max_workers=4)
 
-# WhatsApp
 def send_whatsapp_background(msg, to_wpp):
     try:
         logger.info(f"[BG] Enviando WhatsApp: {msg}")
@@ -49,7 +50,6 @@ def send_whatsapp_background(msg, to_wpp):
         logger.error(f"Erro WhatsApp: {e}")
         return {'status': 'error', 'error': str(e)}
 
-# Gemini Pro
 def ask_gemini_background(user_input):
     try:
         logger.info(f"[BG] Pergunta: {user_input}")
@@ -61,7 +61,7 @@ def ask_gemini_background(user_input):
 
 @app.route('/')
 def index():
-    return "✅ Kaizen rodando com Gemini Pro + Twilio"
+    return "✅ Kaizen rodando com Gemini 1.5 Pro + Twilio"
 
 @app.route('/send_whatsapp', methods=['POST'])
 def send_whatsapp():
@@ -100,3 +100,4 @@ if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"Iniciando app na porta {port}")
     app.run(host='0.0.0.0', port=port, threaded=True)
+
