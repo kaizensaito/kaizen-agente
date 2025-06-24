@@ -3,3 +3,4 @@ twilio==9.6.3
 requests==2.32.4
 pytz
 openai
+google-auth
