@@ -2,7 +2,9 @@ flask==3.1.1
 twilio==9.6.3
 requests==2.32.4
 pytz
-openai
+flask
+twilio
+openai>=1.0.0
 google-auth
 google-api-python-client
 python-dotenv==1.0.1
