@@ -1,292 +1,161 @@
-import os
-import io
-import json
-import time
-import threading
-import logging
-import requests
-
+# ⚙️ IMPORTS
+import os, io, json, time, threading, logging, requests, schedule, smtplib
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import google.generativeai as genai
 from openai import OpenAI
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as build_drive
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from twilio.rest import Client
 
-# ─── CONFIG & LOGGING ─────────────────────────────────────────────────────────
+# ⚙️ CONFIG
 load_dotenv()
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(message)s")
-
 app = Flask(__name__)
-CLIENT_TZ   = ZoneInfo("America/Sao_Paulo")
+CLIENT_TZ = ZoneInfo("America/Sao_Paulo")
 MEMORY_LOCK = threading.Lock()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# ─── ENV VARS ─────────────────────────────────────────────────────────────────
-OPENAI_KEY       = os.getenv("OPENAI_API_KEY_MAIN")
-GEMINI_KEY       = os.getenv("GEMINI_API_KEY")
-HF_TOKEN         = os.getenv("HUGGINGFACE_API_TOKEN")
-OR_KEY           = os.getenv("OPENROUTER_API_KEY")
-GOOGLE_CREDS     = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON", "{}"))
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+# 🔐 VARS
+OPENAI_KEY = os.getenv("OPENAI_API_KEY_MAIN")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+HF_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
+OR_KEY = os.getenv("OPENROUTER_API_KEY")
+GOOGLE_CREDS = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON", "{}"))
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM = os.getenv("TWILIO_FROM_NUMBER")
+TWILIO_TO = os.getenv("TWILIO_TO_NUMBER")
+GMAIL_USER = os.getenv("GMAIL_USER")
+GMAIL_PASS = os.getenv("GMAIL_PASS")
 
-logging.info(
-    f"OPENAI={'OK' if OPENAI_KEY else 'MISSING'} • "
-    f"GEMINI={'OK' if GEMINI_KEY else 'MISSING'} • "
-    f"HF={'OK' if HF_TOKEN else 'MISSING'} • "
-    f"OR={'OK' if OR_KEY else 'MISSING'} • "
-    f"TG_TOKEN={'OK' if TELEGRAM_TOKEN else 'MISSING'} • "
-    f"TG_CHAT_ID={'OK' if TELEGRAM_CHAT_ID else 'MISSING'}"
-)
+twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# ─── LLM CLIENTS & SYSTEM PROMPT ───────────────────────────────────────────────
+# 🤖 LLMs
 openai_client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
+if GEMINI_KEY: genai.configure(api_key=GEMINI_KEY)
 
-SYSTEM_PROMPT = (
-    "Você é o Kaizen: assistente autônomo, direto e levemente sarcástico, "
-    "que provoca Nilson Saito e impulsiona a melhoria contínua."
-)
+SYSTEM_PROMPT = "Você é o Kaizen: assistente autônomo, direto e levemente sarcástico, que provoca Nilson Saito e impulsiona a melhoria contínua."
 MAX_CTX = 4000
 
-# ─── PROVIDER CALLS ────────────────────────────────────────────────────────────
 def call_openai(model, text):
     try:
-        resp = openai_client.chat.completions.create(
+        return openai_client.chat.completions.create(
             model=model,
             messages=[{"role":"system","content":SYSTEM_PROMPT},
                       {"role":"user","content":text}],
             temperature=0.7
-        )
-        return resp.choices[0].message.content.strip()
+        ).choices[0].message.content.strip()
     except Exception as e:
         raise RuntimeError(f"OpenAI[{model}] error: {e}")
 
 def call_gemini(text):
-    g = genai.GenerativeModel("models/gemini-1.5-flash") \
-         .generate_content([{"role":"user","parts":[text]}])
-    return getattr(g, "text", "").strip()
+    return getattr(
+        genai.GenerativeModel("models/gemini-1.5-flash").generate_content(
+            [{"role":"user","parts":[text]}]), "text", "").strip()
 
 def call_mistral(text):
-    r = requests.post(
-        "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1",
-        headers={"Authorization":f"Bearer {HF_TOKEN}"},
-        json={"inputs": text}, timeout=30
-    )
+    r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1",
+        headers={"Authorization":f"Bearer {HF_TOKEN}"}, json={"inputs": text}, timeout=30)
     r.raise_for_status()
     return r.json()[0]["generated_text"].strip()
 
 def call_openrouter(text):
-    r = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization":f"Bearer {OR_KEY}",
-            "HTTP-Referer":"https://kaizen-agent",
-            "X-Title":"Kaizen Agent"
-        },
-        json={
-            "model":"mistral",
-            "messages":[
-                {"role":"system","content":SYSTEM_PROMPT},
-                {"role":"user","content":text}
-            ]
-        }, timeout=30
-    )
+    r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization":f"Bearer {OR_KEY}",
+                 "HTTP-Referer":"https://kaizen-agent",
+                 "X-Title":"Kaizen Agent"},
+        json={"model":"mistral","messages":[
+            {"role":"system","content":SYSTEM_PROMPT},
+            {"role":"user","content":text}]}, timeout=30)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"].strip()
 
-def call_copilot(text):
-    return call_openai("gpt-4o", text)
+def call_copilot(text): return call_openai("gpt-4o", text)
 
-# ─── MONTAR PROVIDERS E FALLBACK ORDER ────────────────────────────────────────
 ALL_PROVIDERS = {}
-if GEMINI_KEY:     ALL_PROVIDERS["gemini"]        = call_gemini
-if HF_TOKEN:       ALL_PROVIDERS["mistral"]       = call_mistral
-if OR_KEY:         ALL_PROVIDERS["openrouter"]    = call_openrouter
+if GEMINI_KEY:     ALL_PROVIDERS["gemini"] = call_gemini
+if HF_TOKEN:       ALL_PROVIDERS["mistral"] = call_mistral
+if OR_KEY:         ALL_PROVIDERS["openrouter"] = call_openrouter
 if OPENAI_KEY:
     ALL_PROVIDERS["gpt-3.5-turbo"] = lambda t: call_openai("gpt-3.5-turbo", t)
-    ALL_PROVIDERS["copilot"]       = call_copilot
+    ALL_PROVIDERS["copilot"] = call_copilot
 
-FALLBACK_ORDER = [
-    p for p in ["gemini", "mistral", "openrouter", "gpt-3.5-turbo", "copilot"]
-    if p in ALL_PROVIDERS
-]
+FALLBACK_ORDER = [p for p in ["gemini","mistral","openrouter","gpt-3.5-turbo","copilot"] if p in ALL_PROVIDERS]
+usage_counters = {p: 0 for p in FALLBACK_ORDER}
+DAILY_LIMITS = {"gemini": 50}
+CACHE = {}
 _fallback_lock = threading.Lock()
 
-# ─── COTAS, USO & CACHE ────────────────────────────────────────────────────────
-usage_counters = {p: 0 for p in FALLBACK_ORDER}
-DAILY_LIMITS   = {"gemini": 50}
-CACHE          = {}
+def within_limit(p): return usage_counters[p] < DAILY_LIMITS.get(p, float("inf"))
+def cached(p, fn, txt): return CACHE.setdefault((p,txt), fn(txt))
 
-def within_limit(name):
-    lim = DAILY_LIMITS.get(name)
-    return True if lim is None else usage_counters[name] < lim
-
-def cached(name, fn, text):
-    key = (name, text)
-    if key in CACHE:
-        return CACHE[key]
-    out = fn(text)
-    CACHE[key] = out
-    return out
-
-# ─── BUILD CONTEXT ────────────────────────────────────────────────────────────
 def build_context(channel, msg):
-  import schedule
-from twilio.rest import Client
-
-# Configurações Twilio (env vars já setadas)
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM        = os.getenv("TWILIO_FROM_NUMBER")  # Número Twilio +55XX...
-TWILIO_TO          = os.getenv("TWILIO_TO_NUMBER")    # Seu número pessoal +55XX...
-
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-def send_whatsapp(msg):
-    try:
-        twilio_client.messages.create(
-            body=msg,
-            from_=f"whatsapp:{TWILIO_FROM}",
-            to=f"whatsapp:{TWILIO_TO}"
-        )
-        logging.info("[whatsapp] mensagem enviada")
-    except Exception as e:
-        logging.error(f"[whatsapp] falha no envio: {e}")
-
-def send_email(subject, body):
-    # Implementação simples com Gmail API ou SMTP - exemplo SMTP abaixo
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-
-    gmail_user = os.getenv("GMAIL_USER")
-    gmail_pass = os.getenv("GMAIL_PASS")
-    to_addr = gmail_user  # autoenvio
-
-    msg = MIMEMultipart()
-    msg['From'] = gmail_user
-    msg['To'] = to_addr
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
-
-    try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(gmail_user, gmail_pass)
-            server.send_message(msg)
-        logging.info("[email] enviado com sucesso")
-    except Exception as e:
-        logging.error(f"[email] falha ao enviar: {e}")
-
-def heartbeat_job():
-    logging.info("[heartbeat] iniciando verificação de serviços")
-    statuses = []
-    for name, fn in ALL_PROVIDERS.items():
-        try:
-            reply = fn("Teste Kaizen")
-            statuses.append(f"{name}: OK")
-        except Exception as e:
-            statuses.append(f"{name}: ERRO - {e}")
-    status_text = "\n".join(statuses)
-    timestamp = datetime.now(CLIENT_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    report = f"Heartbeat Kaizen - {timestamp}\nStatus dos Providers:\n{status_text}"
-    send_whatsapp(report)
-    send_telegram(TELEGRAM_CHAT_ID, report)
-    send_email("Kaizen Heartbeat Diário", report)
-    logging.info("[heartbeat] relatório enviado")
-
-# Agendar heartbeat às 18:00 horário de São Paulo
-schedule.every().day.at("18:00").do(heartbeat_job)
-
-def schedule_loop():
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
-
-# Inserir esta thread logo após o start do autonomous_loop
-threading.Thread(target=schedule_loop, daemon=True).start()
     mem = read_memory()
     hist = [m for m in mem if m["origem"] == channel]
     parts, size = [], 0
     for h in reversed(hist):
-        blk = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
-        if size + len(blk) > MAX_CTX * 0.8:
-            break
-        parts.insert(0, blk)
-        size += len(blk)
+        b = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
+        if size + len(b) > MAX_CTX * 0.8: break
+        parts.insert(0, b)
+        size += len(b)
     parts.append(f"Usuário: {msg}")
     ctx = SYSTEM_PROMPT + "\n" + "".join(parts)
     return ctx[-MAX_CTX:] if len(ctx) > MAX_CTX else ctx
 
-# ─── FALLBACK ROBUSTO ──────────────────────────────────────────────────────────
 def gerar_resposta(text):
-    errors = {}
-    with _fallback_lock:
-        seq = FALLBACK_ORDER.copy()
-    for name in seq:
-        if not within_limit(name):
-            errors[name] = "quota excedida"
-            continue
+    with _fallback_lock: seq = FALLBACK_ORDER.copy()
+    for p in seq:
+        if not within_limit(p): continue
         try:
-            logging.info(f"[fallback] tentando {name}")
-            out = cached(name, ALL_PROVIDERS[name], text)
-            if not out or not out.strip():
-                raise RuntimeError(f"{name} retornou vazio")
-            # só agora incrementa após sucesso
-            usage_counters[name] += 1
-            # promove provider vencedor
+            logging.info(f"[fallback] tentando {p}")
+            out = cached(p, ALL_PROVIDERS[p], text)
+            if not out.strip(): raise RuntimeError(f"{p} vazio")
+            usage_counters[p] += 1
             with _fallback_lock:
-                FALLBACK_ORDER.remove(name)
-                FALLBACK_ORDER.insert(0, name)
+                FALLBACK_ORDER.remove(p)
+                FALLBACK_ORDER.insert(0, p)
             return out
         except Exception as e:
-            logging.warning(f"[fallback] {name} falhou: {e}")
-            errors[name] = str(e)
-    return f"⚠️ Nenhuma IA disponível. Erros: {errors}"
+            logging.warning(f"{p} falhou: {e}")
+    return "⚠️ Todas as IAs falharam."
 
 def gerar_resposta_com_memoria(channel, msg):
-    ctx  = build_context(channel, msg)
-    resp = gerar_resposta(ctx)
-    if resp.startswith("⚠️"):
-        return resp
+    resp = gerar_resposta(build_context(channel, msg))
+    if resp.startswith("⚠️"): return resp
     write_memory({
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "origem":    channel,
-        "entrada":   msg,
-        "resposta":  resp
+        "origem": channel,
+        "entrada": msg,
+        "resposta": resp
     })
     return resp
 
-# ─── MEMÓRIA (Google Drive) ───────────────────────────────────────────────────
-SCOPES      = ['https://www.googleapis.com/auth/drive']
-MEM_FILE    = 'kaizen_memory_log.json'
+# 📁 Google Drive Memória
+SCOPES = ['https://www.googleapis.com/auth/drive']
+MEM_FILE = 'kaizen_memory_log.json'
 
 def drive_service():
-    creds = service_account.Credentials.from_service_account_info(
-        GOOGLE_CREDS, scopes=SCOPES)
+    creds = service_account.Credentials.from_service_account_info(GOOGLE_CREDS, scopes=SCOPES)
     return build_drive('drive', 'v3', credentials=creds, cache_discovery=False)
 
 def get_file_id(svc):
-    files = svc.files().list(
-        q=f"name='{MEM_FILE}'", spaces='drive', fields='files(id)'
-    ).execute().get('files', [])
-    if not files:
-        raise FileNotFoundError(MEM_FILE)
-    return files[0]['id']
+    r = svc.files().list(q=f"name='{MEM_FILE}'", spaces='drive', fields='files(id)').execute()
+    return r['files'][0]['id']
 
 def read_memory():
-    svc = drive_service()
-    buf = io.BytesIO()
-    done = False
+    svc, buf = drive_service(), io.BytesIO()
     dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=get_file_id(svc)))
-    while not done:
-        _, done = dl.next_chunk()
+    while True:
+        done = dl.next_chunk()[1]
+        if done: break
     buf.seek(0)
     return json.load(buf)
 
@@ -297,29 +166,76 @@ def write_memory(entry):
         mem = read_memory()
         mem.append(entry)
         buf = io.BytesIO(json.dumps(mem, indent=2).encode())
-        svc.files().update(fileId=fid,
-                           media_body=MediaIoBaseUpload(buf,'application/json')).execute()
+        svc.files().update(fileId=fid, media_body=MediaIoBaseUpload(buf, 'application/json')).execute()
 
-# ─── TELEGRAM & ROTAS ─────────────────────────────────────────────────────────
-def send_telegram(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+# 📩 Notificações
+def send_telegram(cid, txt):
     try:
-        r = requests.post(url, json={"chat_id": chat_id, "text": text})
-        if not r.ok:
-            logging.error(f"[telegram] {r.status_code}: {r.text}")
-    except Exception:
-        logging.exception("[telegram] exception")
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                          json={"chat_id": cid, "text": txt})
+        if not r.ok: logging.error(f"[telegram] {r.status_code}: {r.text}")
+    except: logging.exception("[telegram] erro")
 
+def send_whatsapp(msg):
+    try:
+        twilio_client.messages.create(body=msg, from_=f"whatsapp:{TWILIO_FROM}", to=f"whatsapp:{TWILIO_TO}")
+        logging.info("[whatsapp] enviado")
+    except Exception as e:
+        logging.error(f"[whatsapp] erro: {e}")
+
+def send_email(subject, body):
+    try:
+        msg = MIMEMultipart()
+        msg['From'], msg['To'], msg['Subject'] = GMAIL_USER, GMAIL_USER, subject
+        msg.attach(MIMEText(body, 'plain'))
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(GMAIL_USER, GMAIL_PASS)
+            server.send_message(msg)
+        logging.info("[email] enviado")
+    except Exception as e:
+        logging.error(f"[email] erro: {e}")
+
+# 🔁 Loops
+def autonomous_loop():
+    while True:
+        try:
+            insight = gerar_resposta_com_memoria("saito", "Gere um insight produtivo.")
+            send_telegram(TELEGRAM_CHAT_ID, insight)
+        except: logging.exception("[auto] falhou")
+        time.sleep(4 * 3600)
+
+def reset_daily_counters():
+    while True:
+        now = datetime.now(timezone.utc)
+        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time.sleep((nxt - now).total_seconds())
+        for k in usage_counters: usage_counters[k] = 0
+        logging.info("[quota] resetada")
+
+def heartbeat_job():
+    logging.info("[heartbeat] executando")
+    report = [f"{k}: OK" if callable(v) else f"{k}: ERRO" for k,v in ALL_PROVIDERS.items()]
+    texto = f"Heartbeat {datetime.now(CLIENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(report)
+    send_whatsapp(texto)
+    send_telegram(TELEGRAM_CHAT_ID, texto)
+    send_email("Kaizen Heartbeat", texto)
+
+schedule.every().day.at("18:00").do(heartbeat_job)
+
+def schedule_loop():
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+# 🌐 Rotas
 @app.route('/', methods=['GET'])
 def index(): return "OK", 200
 
 @app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json(force=True)
-    msg  = data.get("message", "").strip()
-    if not msg:
-        return jsonify(error="mensagem vazia"), 400
-    return jsonify(reply=gerar_resposta_com_memoria("web", msg))
+    msg = data.get("message", "").strip()
+    return jsonify(reply=gerar_resposta_com_memoria("web", msg)) if msg else jsonify(error="mensagem vazia"), 400
 
 @app.route('/usage', methods=['GET'])
 def usage(): return jsonify(usage_counters)
@@ -328,49 +244,23 @@ def usage(): return jsonify(usage_counters)
 def test_llm():
     out = {}
     for name, fn in ALL_PROVIDERS.items():
-        try:
-            out[name] = {"ok": True, "reply": fn("Teste Kaizen")}
-        except Exception as e:
-            out[name] = {"ok": False, "error": str(e)}
+        try: out[name] = {"ok": True, "reply": fn("Teste Kaizen")}
+        except Exception as e: out[name] = {"ok": False, "error": str(e)}
     return jsonify(out)
 
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
     payload = request.get_json(force=True).get("message", {})
-    txt     = payload.get("text", "").strip()
-    cid     = str(payload.get("chat", {}).get("id", ""))
-    if not txt:
-        send_telegram(cid, "⚠️ Mensagem vazia.")
-    else:
-        resp = gerar_resposta_com_memoria(f"tg:{cid}", txt)
-        send_telegram(cid, resp)
+    txt = payload.get("text", "").strip()
+    cid = str(payload.get("chat", {}).get("id", ""))
+    if not txt: send_telegram(cid, "⚠️ Mensagem vazia.")
+    else: send_telegram(cid, gerar_resposta_com_memoria(f"tg:{cid}", txt))
     return jsonify(ok=True)
 
-# ─── AUTONOMOUS LOOP (4h) ─────────────────────────────────────────────────────
-def autonomous_loop():
-    while True:
-        try:
-            insight = gerar_resposta_com_memoria("saito", "Gere um insight produtivo.")
-            send_telegram(TELEGRAM_CHAT_ID, insight)
-        except Exception:
-            logging.exception("[autonomous] falhou")
-        time.sleep(4 * 3600)
-
+# ▶️ Start loops
 threading.Thread(target=autonomous_loop, daemon=True).start()
-
-# ─── RESET DIÁRIO DAS COTAS ───────────────────────────────────────────────────
-def reset_daily_counters():
-    while True:
-        now = datetime.now(timezone.utc)
-        nxt = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0)
-        time.sleep((nxt - now).total_seconds())
-        for k in usage_counters:
-            usage_counters[k] = 0
-        logging.info("[quota] contadores resetados")
-
 threading.Thread(target=reset_daily_counters, daemon=True).start()
+threading.Thread(target=schedule_loop, daemon=True).start()
 
-# ─── RUN ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
