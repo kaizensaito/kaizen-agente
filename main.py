@@ -327,3 +327,12 @@ if __name__=='__main__':
 
     port=int(os.environ.get("PORT","10000"))
     app.run(host='0.0.0.0',port=port)
+@app.route('/test_openai', methods=['GET'])
+def test_openai():
+    try:
+        resp = call_openai(MAIN_KEY, "gpt-3.5-turbo", [
+            {"role":"user","content":"Diga olá"}
+        ], temperature=0)
+        return resp.choices[0].message.content, 200
+    except Exception as e:
+        return str(e), 500
