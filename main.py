@@ -5,7 +5,8 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 import google.generativeai as genai
-from openai import OpenAI, error as oa_error
+from openai import OpenAI
+from openai.error import OpenAIError
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as build_drive
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -23,7 +24,7 @@ OPENAI_KEY       = os.getenv("OPENAI_API_KEY_MAIN")
 GEMINI_KEY       = os.getenv("GEMINI_API_KEY")
 HF_TOKEN         = os.getenv("HUGGINGFACE_API_TOKEN")
 OR_KEY           = os.getenv("OPENROUTER_API_KEY")
-GOOGLE_CREDS     = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON","{}"))
+GOOGLE_CREDS     = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON", "{}"))
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -57,7 +58,7 @@ def call_openai(model, text):
             temperature=0.7
         )
         return resp.choices[0].message.content.strip()
-    except oa_error.OpenAIError as e:
+    except OpenAIError as e:
         raise RuntimeError(f"OpenAI[{model}] error: {e}")
 
 def call_gemini(text):
@@ -94,10 +95,9 @@ def call_openrouter(text):
     return r.json()["choices"][0]["message"]["content"].strip()
 
 def call_copilot(text):
-    # GPT-4o como último recurso
     return call_openai("gpt-4o", text)
 
-# ─── MONTAR PROVIDERS E ORDEM DE FALLBACK ─────────────────────────────────────
+# ─── MONTAR PROVIDERS E FALLBACK ORDER ─────────────────────────────────────
 ALL_PROVIDERS = {}
 if GEMINI_KEY:     ALL_PROVIDERS["gemini"]        = call_gemini
 if HF_TOKEN:       ALL_PROVIDERS["mistral"]       = call_mistral
@@ -160,7 +160,7 @@ def gerar_resposta(text):
                 raise RuntimeError(f"{name} retornou vazio")
             # só agora incrementa após sucesso
             usage_counters[name] += 1
-            # promove o provider vencedor
+            # promove provider vencedor
             with _fallback_lock:
                 FALLBACK_ORDER.remove(name)
                 FALLBACK_ORDER.insert(0, name)
@@ -275,12 +275,13 @@ def reset_daily_counters():
         now = datetime.now(timezone.utc)
         nxt = (now + timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
         time.sleep((nxt - now).total_seconds())
-        for k in usage_counters:
-            usage_counters[k] = 0
+        for k in usage_counters: usage_counters[k] = 0
         logging.info("[quota] contadores resetados")
 
 threading.Thread(target=reset_daily_counters, daemon=True).start()
 
 # ─── RUN ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
+    port = int(os.getenv("PORT","10000"))
+    app.run(host="0.0.0.0", port=port)
+    
