@@ -14,14 +14,14 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import io
 from dotenv import load_dotenv
 
-# Carregar variáveis do .env
+# Carregar variáveis do .env (local)
 load_dotenv()
 
 # Configurações Twilio
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-TO_WPP = os.getenv("TO_WPP") or 'whatsapp:+55XXXXXXXXXXX'  # Seu número WhatsApp
+TO_WPP = os.getenv("TO_WPP") or 'whatsapp:+55XXXXXXXXXXX'
 FROM_WPP = 'whatsapp:+14155238886'  # Twilio Sandbox padrão
 
 client_twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -41,12 +41,11 @@ openai.api_key = OPENAI_API_KEY
 
 # Google Drive API Config para memória persistente
 SCOPES = ['https://www.googleapis.com/auth/drive']
-SERVICE_ACCOUNT_FILE = 'credentials.json'
 JSON_FILE_NAME = 'kaizen_memory_log.json'
 
 # Intervalos (segundos)
-CHECK_INTERVAL = 300  # Heartbeat a cada 5min
-WATCHDOG_INTERVAL = 600  # Watchdog a cada 10min
+CHECK_INTERVAL = 300
+WATCHDOG_INTERVAL = 600
 
 app = Flask(__name__)
 
@@ -55,8 +54,12 @@ app = Flask(__name__)
 ##########################
 
 def drive_service():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    creds_info = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if not creds_info:
+        raise Exception("Variável de ambiente GOOGLE_CREDENTIALS_JSON não encontrada.")
+    creds_dict = json.loads(creds_info)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict, scopes=SCOPES)
     return build('drive', 'v3', credentials=creds)
 
 def get_json_file_id(service):
@@ -120,7 +123,6 @@ def gerar_resposta(mensagem):
             print(f"[Gemini ERRO] {model_name}: {e}")
             continue
 
-    # fallback OpenAI
     try:
         completion = openai.ChatCompletion.create(
             model="gpt-4o",
@@ -137,11 +139,9 @@ def gerar_resposta(mensagem):
 def gerar_resposta_com_memoria(usuario, mensagem_nova):
     memoria = read_memory()
 
-    # Filtrar mensagens do usuário para contexto (últimas 10)
     historico_usuario = [m for m in memoria if m.get('origem') == usuario]
-    historico_usuario = historico_usuario[-10:]  # últimas 10 interações do usuário
+    historico_usuario = historico_usuario[-10:]
 
-    # Construir contexto
     contexto = (
         "Você é o Kaizen, agente autônomo para Nilson Saito, direto e prático.\n"
         "Mantenha a conversa com base na memória:\n"
@@ -155,7 +155,6 @@ def gerar_resposta_com_memoria(usuario, mensagem_nova):
 
     resposta = gerar_resposta(contexto)
 
-    # Salvar no log (origem = usuário)
     nova_entrada = {
         "timestamp": datetime.utcnow().isoformat() + 'Z',
         "origem": usuario,
