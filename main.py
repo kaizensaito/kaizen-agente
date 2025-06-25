@@ -138,6 +138,80 @@ def cached(name, fn, text):
 
 # ─── BUILD CONTEXT ────────────────────────────────────────────────────────────
 def build_context(channel, msg):
+  import schedule
+from twilio.rest import Client
+
+# Configurações Twilio (env vars já setadas)
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM        = os.getenv("TWILIO_FROM_NUMBER")  # Número Twilio +55XX...
+TWILIO_TO          = os.getenv("TWILIO_TO_NUMBER")    # Seu número pessoal +55XX...
+
+twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+def send_whatsapp(msg):
+    try:
+        twilio_client.messages.create(
+            body=msg,
+            from_=f"whatsapp:{TWILIO_FROM}",
+            to=f"whatsapp:{TWILIO_TO}"
+        )
+        logging.info("[whatsapp] mensagem enviada")
+    except Exception as e:
+        logging.error(f"[whatsapp] falha no envio: {e}")
+
+def send_email(subject, body):
+    # Implementação simples com Gmail API ou SMTP - exemplo SMTP abaixo
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_pass = os.getenv("GMAIL_PASS")
+    to_addr = gmail_user  # autoenvio
+
+    msg = MIMEMultipart()
+    msg['From'] = gmail_user
+    msg['To'] = to_addr
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(gmail_user, gmail_pass)
+            server.send_message(msg)
+        logging.info("[email] enviado com sucesso")
+    except Exception as e:
+        logging.error(f"[email] falha ao enviar: {e}")
+
+def heartbeat_job():
+    logging.info("[heartbeat] iniciando verificação de serviços")
+    statuses = []
+    for name, fn in ALL_PROVIDERS.items():
+        try:
+            reply = fn("Teste Kaizen")
+            statuses.append(f"{name}: OK")
+        except Exception as e:
+            statuses.append(f"{name}: ERRO - {e}")
+    status_text = "\n".join(statuses)
+    timestamp = datetime.now(CLIENT_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    report = f"Heartbeat Kaizen - {timestamp}\nStatus dos Providers:\n{status_text}"
+    send_whatsapp(report)
+    send_telegram(TELEGRAM_CHAT_ID, report)
+    send_email("Kaizen Heartbeat Diário", report)
+    logging.info("[heartbeat] relatório enviado")
+
+# Agendar heartbeat às 18:00 horário de São Paulo
+schedule.every().day.at("18:00").do(heartbeat_job)
+
+def schedule_loop():
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+# Inserir esta thread logo após o start do autonomous_loop
+threading.Thread(target=schedule_loop, daemon=True).start()
+
     mem = read_memory()
     hist = [m for m in mem if m["origem"] == channel]
     parts, size = [], 0
