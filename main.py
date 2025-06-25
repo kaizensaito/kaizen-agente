@@ -307,5 +307,3 @@ def pensar_autonomamente():
             "entrada":  "erro_autonomo",
             "resposta": str(e)
         })
-
-def
