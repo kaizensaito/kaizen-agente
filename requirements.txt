@@ -9,3 +9,4 @@ google-auth
 google-api-python-client
 python-dotenv==1.0.1
 google-generativeai
+dateutil>=2.8.2
