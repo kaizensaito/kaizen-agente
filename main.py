@@ -28,6 +28,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S%z"
 )
+logging.info(f"OPT_KEY set: {bool(OPT_KEY)}; MAIN_KEY set: {bool(MAIN_KEY)}")
 app = Flask(__name__)
 CLIENT_TZ   = ZoneInfo("America/Sao_Paulo")
 MEMORY_LOCK = threading.Lock()
