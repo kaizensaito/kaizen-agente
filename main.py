@@ -23,23 +23,35 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S%z"
 )
-app        = Flask(__name__)
-CLIENT_TZ  = ZoneInfo("America/Sao_Paulo")
-MEMORY_LOCK= threading.Lock()
+app         = Flask(__name__)
+CLIENT_TZ   = ZoneInfo("America/Sao_Paulo")
+MEMORY_LOCK = threading.Lock()
 
-# ─── TWILIO / WHATSAPP ────────────────────────────────────────────────────────
+# ─── ALIASES / IDENTIDADE ─────────────────────────────────────────────────────
+ALIASES = {
+    "usuario": ["webhook"]  # rota /ask
+}
+def mapear_identidade(origem: str) -> str:
+    if origem.startswith("whatsapp:"):
+        return "usuario"
+    if origem in ALIASES["usuario"]:
+        return "usuario"
+    return origem
+
+# ─── VARIÁVEIS DE AMBIENTE ─────────────────────────────────────────────────────
+# Twilio / WhatsApp
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
 FROM_WPP           = os.environ["FROM_WPP"]
 TO_WPP             = os.environ["TO_WPP"]
 client_twilio      = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# ─── OPENAI: DUAS CONTAS ──────────────────────────────────────────────────────
+# OpenAI – duas contas
 OPT_KEY  = os.environ["OPENAI_API_KEY_OPTIMIZER"]  # GPT-3.5 grátis
-MAIN_KEY = os.environ["OPENAI_API_KEY_MAIN"]       # GPT-4(a) pago
-# (nunca chame openai.api_key diretamente, use sempre call_openai)
+MAIN_KEY = os.environ.get("OPENAI_API_KEY_MAIN", OPT_KEY)
+# Nunca chame openai.api_key globalmente; use call_openai()
 
-# ─── GEMINI ───────────────────────────────────────────────────────────────────
+# Gemini (fallback)
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 GEMINI_MODELS = [
     "models/gemini-1.5-flash",
@@ -47,11 +59,18 @@ GEMINI_MODELS = [
     "models/gemini-2.5-pro-preview-06-05"
 ]
 
-# ─── GOOGLE DRIVE (MEMÓRIA) ───────────────────────────────────────────────────
+# Google Drive (memória)
 SCOPES         = ['https://www.googleapis.com/auth/drive']
 JSON_FILE_NAME = 'kaizen_memory_log.json'
 GOOGLE_CREDS   = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
 
+# Trello (tarefas atômicas)
+TRELLO_KEY     = os.environ["TRELLO_KEY"]
+TRELLO_TOKEN   = os.environ["TRELLO_TOKEN"]
+TRELLO_LIST_ID = os.environ["TRELLO_LIST_ID"]
+TRELLO_API_URL = "https://api.trello.com/1"
+
+# ─── MEMÓRIA (GOOGLE DRIVE) ──────────────────────────────────────────────────
 def drive_service():
     creds = service_account.Credentials.from_service_account_info(
         GOOGLE_CREDS, scopes=SCOPES
@@ -60,12 +79,11 @@ def drive_service():
 
 def get_json_file_id(svc):
     files = svc.files().list(
-        q=f"name='{JSON_FILE_NAME}'",
-        spaces='drive',
+        q=f"name='{JSON_FILE_NAME}'", spaces='drive',
         fields='files(id)'
     ).execute().get('files', [])
     if not files:
-        raise FileNotFoundError(f"{JSON_FILE_NAME} não encontrado no Drive.")
+        raise FileNotFoundError(f"{JSON_FILE_NAME} não encontrado.")
     return files[0]['id']
 
 def read_memory():
@@ -73,10 +91,10 @@ def read_memory():
     fid = get_json_file_id(svc)
     req = svc.files().get_media(fileId=fid)
     buf = io.BytesIO()
-    dl  = MediaIoBaseDownload(buf, req)
+    downloader = MediaIoBaseDownload(buf, req)
     done = False
     while not done:
-        _, done = dl.next_chunk()
+        _, done = downloader.next_chunk()
     buf.seek(0)
     return json.load(buf)
 
@@ -91,12 +109,11 @@ def write_memory(entry):
         svc.files().update(fileId=fid, media_body=media).execute()
         logging.info(f"[Memória] {entry['origem']} → gravado")
 
-# ─── OPENAI HELPERS & ORQUESTRAÇÃO ────────────────────────────────────────────
+# ─── OPENAI & PIPELINE ────────────────────────────────────────────────────────
 def call_openai(api_key, **kwargs):
     return openai.ChatCompletion.create(api_key=api_key, **kwargs)
 
 def otimizar_prompt(raw: str) -> str:
-    """Usa GPT-3.5 para comprimir o prompt ao mínimo de tokens."""
     resp = call_openai(
         OPT_KEY,
         model="gpt-3.5-turbo",
@@ -115,8 +132,8 @@ def otimizar_prompt(raw: str) -> str:
 
 def gerar_resposta(contexto: str) -> str:
     system_prompt = (
-      "Você é o Kaizen, IA autônoma, direta e estratégica para Nilson Saito. "
-      "Nada de floreios."
+        "Você é o Kaizen, IA autônoma, direta e estratégica para Nilson Saito. "
+        "Nada de floreios."
     )
     raw = f"{system_prompt}\n{contexto}"
     # 1) pré-compressão
@@ -125,8 +142,7 @@ def gerar_resposta(contexto: str) -> str:
     except Exception as e:
         logging.warning(f"[Otimização] falhou: {e}")
         prompt_otim = raw
-
-    # 2) chamada principal GPT-4
+    # 2) chama GPT-4 (ou fallback para 3.5 se MAIN_KEY==OPT_KEY)
     try:
         resp = call_openai(
             MAIN_KEY,
@@ -134,13 +150,12 @@ def gerar_resposta(contexto: str) -> str:
             temperature=0.7,
             messages=[
                 {"role":"system","content":system_prompt},
-                {"role":"user",  "content":prompt_otim}
+                {"role":"user","content":prompt_otim}
             ]
         )
         return resp.choices[0].message.content.strip()
     except Exception as e_g4:
         logging.warning(f"[GPT-4] falhou: {e_g4}, tentando Gemini…")
-
     # 3) fallback Gemini
     for model in GEMINI_MODELS:
         try:
@@ -154,9 +169,11 @@ def gerar_resposta(contexto: str) -> str:
     return "Erro geral: todos os modelos falharam."
 
 def gerar_resposta_com_memoria(origem: str, msg: str) -> str:
-    hist = [m for m in read_memory() if m.get("origem")==origem][-10:]
-    ctx  = "\n".join(f"Usuário: {m['entrada']}\nKaizen: {m['resposta']}" for m in hist)
-    ctx += f"\nUsuário: {msg}"
+    alias = mapear_identidade(origem)
+    mem   = read_memory()
+    hist  = [m for m in mem if mapear_identidade(m["origem"]) == alias][-10:]
+    ctx   = "\n".join(f"Usuário: {m['entrada']}\nKaizen: {m['resposta']}" for m in hist)
+    ctx  += f"\nUsuário: {msg}"
     resposta = gerar_resposta(ctx)
     write_memory({
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -175,15 +192,14 @@ def enviar_whatsapp(to: str, msg: str):
         logging.exception("[WhatsApp] falha ao enviar")
 
 # ─── TRELLO LAYER ─────────────────────────────────────────────────────────────
-TRELLO_API_URL = "https://api.trello.com/1"
-def criar_tarefa_trello(titulo: str, descricao: str="", due_days: int=1):
-    due = (datetime.now(timezone.utc) + timedelta(days=due_days)) \
-          .replace(hour=9, minute=0, second=0, microsecond=0) \
+def criar_tarefa_trello(titulo: str, descricao: str = "", due_days: int = 1):
+    due = (datetime.now(timezone.utc) + timedelta(days=due_days))\
+          .replace(hour=9, minute=0, second=0, microsecond=0)\
           .isoformat()
     payload = {
-        "key":    os.environ["TRELLO_KEY"],
-        "token":  os.environ["TRELLO_TOKEN"],
-        "idList": os.environ["TRELLO_LIST_ID"],
+        "key":    TRELLO_KEY,
+        "token":  TRELLO_TOKEN,
+        "idList": TRELLO_LIST_ID,
         "name":   titulo[:100],
         "desc":   descricao,
         "due":    due,
@@ -197,14 +213,13 @@ def criar_tarefa_trello(titulo: str, descricao: str="", due_days: int=1):
     except Exception:
         logging.exception("[Trello] falha ao criar card")
 
-# ─── CICLOS AUTÔNOMOS & MONITOR ───────────────────────────────────────────────
+# ─── CICLOS & MONITOR ─────────────────────────────────────────────────────────
 def pensar_autonomamente():
     h = datetime.now(CLIENT_TZ).hour
-    if   5 <= h < 9:    prompt = "Bom dia. Que atitude proativa tomaria hoje sem intervenção?"
-    elif 12 <= h < 14:  prompt = "Hora do almoço. Revise sua performance e gere insight produtivo."
-    elif 18 <= h < 20:  prompt = "Fim de expediente. O que aprendeu e pode otimizar amanhã?"
-    else:               prompt = "Use seu julgamento. Faça algo útil com base no histórico."
-
+    if   5  <= h < 9:    prompt = "Bom dia. Que atitude proativa tomaria hoje sem intervenção?"
+    elif 12 <= h < 14:   prompt = "Hora do almoço. Revise sua performance e gere insight produtivo."
+    elif 18 <= h < 20:   prompt = "Fim de expediente. O que aprendeu e pode otimizar amanhã?"
+    else:                prompt = "Use seu julgamento. Faça algo útil com base no histórico."
     try:
         insight = gerar_resposta_com_memoria("saito", prompt)
         enviar_whatsapp(TO_WPP, insight)
@@ -264,25 +279,25 @@ def index():
 @app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json(force=True)
-    msg  = data.get("message","").strip()
+    msg  = data.get("message", "").strip()
     if not msg:
-        return jsonify({"error":"mensagem vazia"}), 400
+        return jsonify({"error": "mensagem vazia"}), 400
     reply = gerar_resposta_com_memoria("webhook", msg)
-    return jsonify({"reply":reply})
+    return jsonify({"reply": reply})
 
 @app.route('/whatsapp_webhook', methods=['POST'])
 def whatsapp_webhook():
-    msg    = request.form.get("Body","")
-    sender = request.form.get("From","")
+    msg    = request.form.get("Body", "")
+    sender = request.form.get("From", "")
     resp   = gerar_resposta_com_memoria(sender, msg)
     enviar_whatsapp(sender, resp)
     return "OK", 200
 
 # ─── BOOT ────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    threading.Thread(target=loop, args=(heartbeat,300), daemon=True).start()
-    threading.Thread(target=loop, args=(check_render,600), daemon=True).start()
+    threading.Thread(target=loop, args=(heartbeat, 300), daemon=True).start()
+    threading.Thread(target=loop, args=(check_render, 600), daemon=True).start()
     threading.Thread(target=loop_relatorio, daemon=True).start()
-    threading.Thread(target=loop, args=(pensar_autonomamente,3600), daemon=True).start()
+    threading.Thread(target=loop, args=(pensar_autonomamente, 3600), daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
