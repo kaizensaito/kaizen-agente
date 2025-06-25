@@ -12,3 +12,4 @@ google-generativeai
 python-dateutil>=2.8.2
 python-dotenv
 requests
+schedule
