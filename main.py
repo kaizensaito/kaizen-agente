@@ -9,11 +9,11 @@ import io
 import openai
 import google.generativeai as genai
 from datetime import datetime, timedelta, timezone
+from dateutil.parser import parse as dt_parse
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
-from twilio.rest import Client
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from googleapiclient.discovery import build as build_drive, build as build_cal
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from dotenv import load_dotenv
 
@@ -30,53 +30,55 @@ MEMORY_LOCK = threading.Lock()
 
 # ─── IDENTIDADE / ALIASES ─────────────────────────────────────────────────────
 def mapear_identidade(origem: str) -> str:
-    if origem.startswith("whatsapp:"):
+    if origem.startswith("tg:"):
         return "usuario"
     if origem == "webhook":
         return "usuario"
     return origem
 
-# ─── VARIÁVEIS DE AMBIENTE ─────────────────────────────────────────────────────
-# Twilio / WhatsApp
-TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
-FROM_WPP           = os.environ["FROM_WPP"]
-TO_WPP             = os.environ["TO_WPP"]
-client_twilio      = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# ─── ENV VARS ─────────────────────────────────────────────────────────────────
+# OpenAI
+OPT_KEY        = os.environ["OPENAI_API_KEY_OPTIMIZER"]
+MAIN_KEY       = os.environ.get("OPENAI_API_KEY_MAIN", OPT_KEY)
 
-# OpenAI – duas chaves
-OPT_KEY  = os.environ["OPENAI_API_KEY_OPTIMIZER"]           # GPT-3.5 grátis
-MAIN_KEY = os.environ.get("OPENAI_API_KEY_MAIN", OPT_KEY)  # GPT-4 ou fallback para 3.5
-
-# Gemini (fallback)
+# Gemini fallback
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-GEMINI_MODELS = [
+GEMINI_MODELS  = [
     "models/gemini-1.5-flash",
     "models/gemini-1.5-pro",
     "models/gemini-2.5-pro-preview-06-05"
 ]
 
-# Google Drive (memória)
-SCOPES         = ['https://www.googleapis.com/auth/drive']
-JSON_FILE_NAME = 'kaizen_memory_log.json'
-GOOGLE_CREDS   = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+# Google Drive memory
+SCOPES            = ['https://www.googleapis.com/auth/drive']
+JSON_FILE_NAME    = 'kaizen_memory_log.json'
+GOOGLE_CREDS      = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+
+# Google Calendar
+GOOGLE_CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 
 # Trello
-TRELLO_KEY     = os.environ["TRELLO_KEY"]
-TRELLO_TOKEN   = os.environ["TRELLO_TOKEN"]
-TRELLO_LIST_ID = os.environ["TRELLO_LIST_ID"]
-TRELLO_API_URL = "https://api.trello.com/1"
+TRELLO_KEY      = os.environ["TRELLO_KEY"]
+TRELLO_TOKEN    = os.environ["TRELLO_TOKEN"]
+TRELLO_LIST_ID  = os.environ["TRELLO_LIST_ID"]
+TRELLO_API_URL  = "https://api.trello.com/1"
+
+# Telegram
+TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_LOOP_ID = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_URL     = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 # ─── MEMÓRIA (Google Drive JSON) ───────────────────────────────────────────────
 def drive_service():
     creds = service_account.Credentials.from_service_account_info(
         GOOGLE_CREDS, scopes=SCOPES
     )
-    return build('drive', 'v3', credentials=creds)
+    return build_drive('drive', 'v3', credentials=creds)
 
 def get_json_file_id(svc):
     files = svc.files().list(
-        q=f"name='{JSON_FILE_NAME}'", spaces='drive', fields='files(id)'
+        q=f"name='{JSON_FILE_NAME}'", spaces='drive',
+        fields='files(id)'
     ).execute().get('files', [])
     if not files:
         raise FileNotFoundError(f"{JSON_FILE_NAME} não encontrado.")
@@ -104,9 +106,48 @@ def write_memory(entry):
         svc.files().update(fileId=fid, media_body=media).execute()
         logging.info(f"[Memória] {entry['origem']} → gravado")
 
+# ─── CALENDAR SERVICE & PARSER ────────────────────────────────────────────────
+def calendar_service():
+    creds = service_account.Credentials.from_service_account_info(
+        GOOGLE_CREDS,
+        scopes=['https://www.googleapis.com/auth/calendar']
+    )
+    return build_cal('calendar', 'v3', credentials=creds)
+
+def criar_evento_calendar(summary: str, start_dt: datetime, end_dt: datetime):
+    svc = calendar_service()
+    body = {
+        'summary': summary,
+        'start': {'dateTime': start_dt.isoformat(), 'timeZone':'America/Sao_Paulo'},
+        'end':   {'dateTime': end_dt.isoformat(),   'timeZone':'America/Sao_Paulo'},
+    }
+    ev = svc.events().insert(
+        calendarId=GOOGLE_CALENDAR_ID,
+        body=body
+    ).execute()
+    logging.info(f"[Calendar] evento criado: {ev['id']} → {summary}")
+    return ev
+
+def parse_event_request(text: str) -> dict:
+    prompt = (
+        "Você é um parser de eventos. Recebe uma frase como:\n\n"
+        "  criar evento trabalho amanhã das 8:00 às 20:00\n\n"
+        "Retorne apenas JSON com "
+        "{\"title\":...,\"start\":...,\"end\":...} em ISO 8601, sem texto adicional."
+    )
+    resp = call_openai(
+        OPT_KEY,
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role":"system","content":prompt},
+            {"role":"user","content":text}
+        ],
+        temperature=0
+    )
+    return json.loads(resp.choices[0].message.content.strip())
+
 # ─── OPENAI HELPER (nova API) ──────────────────────────────────────────────────
 def call_openai(api_key: str, model: str, messages: list, temperature: float = 0.7):
-    # troca dinamicamente a chave
     prev = openai.api_key
     openai.api_key = api_key
     resp = openai.chat.completions.create(
@@ -119,11 +160,9 @@ def call_openai(api_key: str, model: str, messages: list, temperature: float = 0
 
 # ─── FUNÇÃO DE OTIMIZAÇÃO DE PROMPT ────────────────────────────────────────────
 def otimizar_prompt(raw: str) -> str:
-    # não comprimir textos muito curtos
     if len(raw) < 500:
         return raw
 
-    # 1) tenta GPT-3.5-turbo
     try:
         resp = call_openai(
             OPT_KEY,
@@ -131,8 +170,8 @@ def otimizar_prompt(raw: str) -> str:
             temperature=0.0,
             messages=[
                 {"role":"system","content":
-                    "Você é um compressor de texto. Receba qualquer input e devolva "
-                    "a versão mais curta, clara e direta possível, preservando 100% do significado."
+                    "Você é um compressor de texto. Devolva a versão mais curta,"
+                    " clara e direta possível, preservando 100% do significado."
                 },
                 {"role":"user","content": raw}
             ]
@@ -143,9 +182,8 @@ def otimizar_prompt(raw: str) -> str:
         if code == "insufficient_quota":
             logging.warning("[Otimização] sem quota GPT-3.5, fallback Gemini")
         else:
-            logging.warning(f"[Otimização] GPT-3.5 falhou: {e}")
+            logging.warning(f"[Otimização] falhou: {e}")
 
-    # 2) fallback Gemini
     for model in GEMINI_MODELS:
         try:
             out = genai.GenerativeModel(model).generate_content([{
@@ -157,11 +195,10 @@ def otimizar_prompt(raw: str) -> str:
         except Exception:
             continue
 
-    # 3) fallback local simples
     text = re.sub(r'\n{2,}', '\n', raw)
     text = re.sub(r' +', ' ', text)
     parts = text.split('\n\n')
-    return '\n\n'.join(parts[:3]) if len(parts) > 3 else text
+    return '\n\n'.join(parts[:3]) if len(parts)>3 else text
 
 # ─── PIPELINE DE GERAÇÃO ──────────────────────────────────────────────────────
 def gerar_resposta(contexto: str) -> str:
@@ -169,25 +206,21 @@ def gerar_resposta(contexto: str) -> str:
         "Você é o Kaizen, IA autônoma, direta e estratégica para Nilson Saito. Nada de floreios."
     )
     raw = f"{system_prompt}\n{contexto}"
-
-    # pré-compressão
     prompt_otim = otimizar_prompt(raw)
 
-    # 1) GPT-4 ou 3.5 fallback
     try:
         resp = call_openai(
             MAIN_KEY,
             model="gpt-4o",
             messages=[
-                {"role":"system","content": system_prompt},
-                {"role":"user",  "content": prompt_otim}
+                {"role":"system","content":system_prompt},
+                {"role":"user","content":prompt_otim}
             ]
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        logging.warning(f"[GPT-4] falhou: {e}, tentando Gemini…")
+        logging.warning(f"[GPT-4] falhou: {e}, fallback Gemini")
 
-    # 2) fallback Gemini
     for model in GEMINI_MODELS:
         try:
             out = genai.GenerativeModel(model).generate_content([{
@@ -203,63 +236,91 @@ def gerar_resposta(contexto: str) -> str:
 def gerar_resposta_com_memoria(origem: str, msg: str) -> str:
     alias = mapear_identidade(origem)
     mem   = read_memory()
-    hist  = [m for m in mem if mapear_identidade(m["origem"]) == alias][-10:]
+    hist  = [m for m in mem if mapear_identidade(m["origem"])==alias][-10:]
     ctx   = "\n".join(f"Usuário: {m['entrada']}\nKaizen: {m['resposta']}" for m in hist)
     ctx  += f"\nUsuário: {msg}"
     resp  = gerar_resposta(ctx)
     write_memory({
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "origem":     origem,
-        "entrada":    msg,
-        "resposta":   resp
+        "origem":    origem,
+        "entrada":   msg,
+        "resposta":  resp
     })
     return resp
 
-# ─── WHATSAPP ─────────────────────────────────────────────────────────────────
-def enviar_whatsapp(to: str, msg: str):
+# ─── TELEGRAM ──────────────────────────────────────────────────────────────────
+def enviar_telegram(chat_id: str, msg: str):
     try:
-        client_twilio.messages.create(body=msg, from_=FROM_WPP, to=to)
-        logging.info(f"[WhatsApp] enviado → {to}")
+        requests.post(
+            TELEGRAM_URL,
+            json={"chat_id": chat_id, "text": msg}
+        ).raise_for_status()
+        logging.info(f"[Telegram] enviado → {chat_id}")
     except Exception:
-        logging.exception("[WhatsApp] falha ao enviar")
+        logging.exception("[Telegram] falha ao enviar")
 
-# ─── TRELLO ───────────────────────────────────────────────────────────────────
-def criar_tarefa_trello(titulo: str, descricao: str = "", due_days: int = 1):
-    due = (datetime.now(timezone.utc) + timedelta(days=due_days))\
-          .replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-    payload = {
-        "key":    TRELLO_KEY,
-        "token":  TRELLO_TOKEN,
-        "idList": TRELLO_LIST_ID,
-        "name":   titulo[:100],
-        "desc":   descricao,
-        "due":    due,
-        "pos":    "top"
-    }
-    try:
-        r = requests.post(f"{TRELLO_API_URL}/cards", params=payload)
-        r.raise_for_status()
-        card = r.json()
-        logging.info(f"[Trello] criado: {card['id']} → {titulo}")
-    except Exception:
-        logging.exception("[Trello] falha ao criar card")
+@app.route('/telegram_webhook', methods=['POST'])
+def telegram_webhook():
+    upd    = request.get_json(force=True)
+    msg    = upd["message"].get("text","")
+    chatid = str(upd["message"]["chat"]["id"])
+
+    lower = msg.lower()
+    if "criar evento" in lower:
+        ev    = parse_event_request(msg)
+        start = dt_parse(ev["start"])
+        end   = dt_parse(ev["end"])
+        criar_evento_calendar(ev["title"], start, end)
+        resp = (
+            f"✅ Evento '{ev['title']}' criado:\n"
+            f"{start.strftime('%Y-%m-%d %H:%M')}–{end.strftime('%H:%M')}"
+        )
+    else:
+        resp = gerar_resposta_com_memoria(f"tg:{chatid}", msg)
+
+    enviar_telegram(chatid, resp)
+    return jsonify({"ok": True})
+
+# ─── HTTP /ask (para clientes REST) ───────────────────────────────────────────
+@app.route('/ask', methods=['POST'])
+def ask():
+    data = request.get_json(force=True)
+    msg  = data.get("message","").strip()
+    if not msg:
+        return jsonify({"error":"mensagem vazia"}), 400
+
+    lower = msg.lower()
+    if "criar evento" in lower:
+        ev    = parse_event_request(msg)
+        start = dt_parse(ev["start"])
+        end   = dt_parse(ev["end"])
+        created = criar_evento_calendar(ev["title"], start, end)
+        return jsonify({
+            "status":"ok",
+            "message": f"Evento '{ev['title']}' criado: {start}–{end}.",
+            "id": created["id"]
+        })
+
+    reply = gerar_resposta_com_memoria("webhook", msg)
+    return jsonify({"reply": reply})
 
 # ─── CICLOS & MONITORAMENTO ───────────────────────────────────────────────────
 def pensar_autonomamente():
     h = datetime.now(CLIENT_TZ).hour
-    if   5  <= h < 9:    p = "Bom dia. Que atitude proativa tomaria hoje sem intervenção?"
-    elif 12 <= h < 14:   p = "Hora do almoço. Revise sua performance e gere insight produtivo."
-    elif 18 <= h < 20:   p = "Fim de expediente. O que aprendeu e pode otimizar amanhã?"
-    else:                p = "Use seu julgamento. Execute algo útil com base no histórico."
+    if   5  <= h < 9:    prompt = "Bom dia. Que atitude proativa tomaria hoje sem intervenção?"
+    elif 12 <= h < 14:   prompt = "Hora do almoço. Revise sua performance e gere insight produtivo."
+    elif 18 <= h < 20:   prompt = "Fim de expediente. O que aprendeu e pode otimizar amanhã?"
+    else:                prompt = "Use seu julgamento. Execute algo útil com base no histórico."
     try:
-        insight = gerar_resposta_com_memoria("saito", p)
-        enviar_whatsapp(TO_WPP, insight)
+        insight = gerar_resposta_com_memoria("saito", prompt)
+        enviar_telegram(TELEGRAM_LOOP_ID, insight)
+        # cria tarefa Trello
         criar_tarefa_trello(insight.split("\n")[0], descricao=insight)
     except Exception as e:
         write_memory({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "origem":   "kaizen_autonomo",
-            "entrada":  "erro_ciclo_autonomo",
+            "entrada":  "erro_autonomo",
             "resposta": str(e)
         })
 
@@ -270,6 +331,7 @@ def heartbeat():
         "entrada":  "heartbeat",
         "resposta": "Kaizen ativo."
     })
+    enviar_telegram(TELEGRAM_LOOP_ID, "🟢 Kaizen ativo.")
 
 def check_render():
     try:
@@ -300,29 +362,7 @@ def loop_relatorio():
         if now > target:
             target += timedelta(days=1)
         time.sleep((target - now).total_seconds())
-        enviar_whatsapp(TO_WPP, "🧠 Kaizen rodando bem. Status diário OK.")
-
-# ─── FLASK ROUTES ─────────────────────────────────────────────────────────────
-@app.route('/')
-def index():
-    return "✅ Kaizen ativo: memória, WhatsApp, Trello, autonomia."
-
-@app.route('/ask', methods=['POST'])
-def ask():
-    data = request.get_json(force=True)
-    msg  = data.get("message", "").strip()
-    if not msg:
-        return jsonify({"error": "mensagem vazia"}), 400
-    reply = gerar_resposta_com_memoria("webhook", msg)
-    return jsonify({"reply": reply})
-
-@app.route('/whatsapp_webhook', methods=['POST'])
-def whatsapp_webhook():
-    msg    = request.form.get("Body", "")
-    sender = request.form.get("From", "")
-    resp   = gerar_resposta_com_memoria(sender, msg)
-    enviar_whatsapp(sender, resp)
-    return "OK", 200
+        enviar_telegram(TELEGRAM_LOOP_ID, "🧠 Status diário OK.")
 
 # ─── BOOT ────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
