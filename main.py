@@ -24,8 +24,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S%z"
 )
-app         = Flask(__name__)
-CLIENT_TZ   = ZoneInfo("America/Sao_Paulo")
+app = Flask(__name__)
+CLIENT_TZ = ZoneInfo("America/Sao_Paulo")
 MEMORY_LOCK = threading.Lock()
 
 # ─── ALIASES ───────────────────────────────────────────────────────────────────
@@ -35,28 +35,28 @@ def mapear_identidade(origem: str) -> str:
     return origem
 
 # ─── ENV VARS ─────────────────────────────────────────────────────────────────
-OPT_KEY             = os.environ["OPENAI_API_KEY_OPTIMIZER"]
-MAIN_KEY            = os.environ.get("OPENAI_API_KEY_MAIN", OPT_KEY)
+OPT_KEY            = os.environ["OPENAI_API_KEY_OPTIMIZER"]
+MAIN_KEY           = os.environ.get("OPENAI_API_KEY_MAIN", OPT_KEY)
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-GEMINI_MODELS       = [
+GEMINI_MODELS      = [
     "models/gemini-1.5-flash",
     "models/gemini-1.5-pro",
     "models/gemini-2.5-pro-preview-06-05"
 ]
 
-SCOPES              = ['https://www.googleapis.com/auth/drive']
-JSON_FILE_NAME      = 'kaizen_memory_log.json'
-GOOGLE_CREDS        = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
-GOOGLE_CALENDAR_ID  = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+SCOPES             = ['https://www.googleapis.com/auth/drive']
+JSON_FILE_NAME     = 'kaizen_memory_log.json'
+GOOGLE_CREDS       = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+GOOGLE_CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 
-TRELLO_KEY          = os.environ["TRELLO_KEY"]
-TRELLO_TOKEN        = os.environ["TRELLO_TOKEN"]
-TRELLO_LIST_ID      = os.environ["TRELLO_LIST_ID"]
-TRELLO_API_URL      = "https://api.trello.com/1"
+TRELLO_KEY         = os.environ["TRELLO_KEY"]
+TRELLO_TOKEN       = os.environ["TRELLO_TOKEN"]
+TRELLO_LIST_ID     = os.environ["TRELLO_LIST_ID"]
+TRELLO_API_URL     = "https://api.trello.com/1"
 
-TELEGRAM_TOKEN      = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_LOOP_ID    = os.environ["TELEGRAM_CHAT_ID"]
-TELEGRAM_URL        = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_LOOP_ID  = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_URL      = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 # ─── MEMÓRIA (Google Drive JSON) ───────────────────────────────────────────────
 def drive_service():
@@ -76,7 +76,9 @@ def get_json_file_id(svc):
 def read_memory():
     svc = drive_service()
     req = svc.files().get_media(fileId=get_json_file_id(svc))
-    buf = io.BytesIO(); dl = MediaIoBaseDownload(buf, req); done=False
+    buf = io.BytesIO()
+    dl  = MediaIoBaseDownload(buf, req)
+    done = False
     while not done:
         _, done = dl.next_chunk()
     buf.seek(0)
@@ -120,7 +122,7 @@ def parse_event_request(text: str) -> dict:
     )
     resp = call_openai(
         OPT_KEY, model="gpt-3.5-turbo",
-        messages=[{"role":"system","content":prompt},{"role":"user","content":text}],
+        messages=[{"role":"system","content":prompt}, {"role":"user","content":text}],
         temperature=0
     )
     return json.loads(resp.choices[0].message.content.strip())
@@ -162,7 +164,7 @@ def otimizar_prompt(raw: str) -> str:
     t = re.sub(r'\n{2,}', '\n', raw)
     t = re.sub(r' +', ' ', t)
     p = t.split('\n\n')
-    return '\n\n'.join(p[:3]) if len(p)>3 else t
+    return '\n\n'.join(p[:3]) if len(p) > 3 else t
 
 def gerar_resposta(contexto: str) -> str:
     system_prompt = "Você é o Kaizen, IA autônoma e estratégica para Nilson Saito."
@@ -191,7 +193,7 @@ def gerar_resposta(contexto: str) -> str:
 def gerar_resposta_com_memoria(origem: str, msg: str) -> str:
     alias = mapear_identidade(origem)
     mem   = read_memory()
-    hist  = [m for m in mem if mapear_identidade(m["origem"])==alias][-10:]
+    hist  = [m for m in mem if mapear_identidade(m["origem"]) == alias][-10:]
     ctx   = "\n".join(f"Usuário: {m['entrada']}\nKaizen: {m['resposta']}" for m in hist)
     ctx  += f"\nUsuário: {msg}"
     resp  = gerar_resposta(ctx)
@@ -304,7 +306,7 @@ def ask():
 # ─── CICLOS & MONITORAMENTO ───────────────────────────────────────────────────
 def pensar_autonomamente():
     h = datetime.now(CLIENT_TZ).hour
-    if 5 <= h < 9:
+    if   5 <= h < 9:
         p = "Bom dia. Que atitude proativa tomaria hoje sem intervenção?"
     elif 12 <= h < 14:
         p = "Hora do almoço. Revise sua performance e gere insight produtivo."
@@ -372,15 +374,27 @@ if __name__ == '__main__':
     # notificação única no boot
     enviar_telegram(TELEGRAM_LOOP_ID, "🟢 Kaizen iniciado e pronto.")
 
-    # check-ins fixos: manhã (09:00) e noite (21:00)
+    # check-ins fixos: manhã e noite
     def schedule_message(hour: int, minute: int, text: str):
         while True:
             now = datetime.now(CLIENT_TZ)
-            target = now.replace(hour=hour, minute=minute,
-                                 second=0, microsecond=0)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if now >= target:
                 target += timedelta(days=1)
             time.sleep((target - now).total_seconds())
             enviar_telegram(TELEGRAM_LOOP_ID, text)
 
-    threading.Thread(target=schedule_message, args=(9, 0,  "☀️ Bom dia
+    threading.Thread(
+        target=schedule_message,
+        args=(9, 0, "☀️ Bom dia! Kaizen está online."),
+        daemon=True
+    ).start()
+
+    threading.Thread(
+        target=schedule_message,
+        args=(21, 0, "🌙 Boa noite! Kaizen segue ativo."),
+        daemon=True
+    ).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
