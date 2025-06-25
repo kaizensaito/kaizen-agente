@@ -15,7 +15,6 @@ from twilio.rest import Client
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-from openai.error import OpenAIError
 from dotenv import load_dotenv
 
 # ─── CONFIGURAÇÃO ─────────────────────────────────────────────────────────────
@@ -37,7 +36,7 @@ def mapear_identidade(origem: str) -> str:
         return "usuario"
     return origem
 
-# ─── ENV VARS ─────────────────────────────────────────────────────────────────
+# ─── VARIÁVEIS DE AMBIENTE ─────────────────────────────────────────────────────
 # Twilio / WhatsApp
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN  = os.environ["TWILIO_AUTH_TOKEN"]
@@ -45,9 +44,9 @@ FROM_WPP           = os.environ["FROM_WPP"]
 TO_WPP             = os.environ["TO_WPP"]
 client_twilio      = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# OpenAI dual-key pattern
-OPT_KEY  = os.environ["OPENAI_API_KEY_OPTIMIZER"]  # GPT-3.5 free
-MAIN_KEY = os.environ.get("OPENAI_API_KEY_MAIN", OPT_KEY)
+# OpenAI – duas chaves
+OPT_KEY  = os.environ["OPENAI_API_KEY_OPTIMIZER"]           # GPT-3.5 grátis
+MAIN_KEY = os.environ.get("OPENAI_API_KEY_MAIN", OPT_KEY)  # GPT-4 ou fallback para 3.5
 
 # Gemini (fallback)
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -107,23 +106,24 @@ def write_memory(entry):
 
 # ─── OPENAI HELPER (nova API) ──────────────────────────────────────────────────
 def call_openai(api_key: str, model: str, messages: list, temperature: float = 0.7):
-    prev_key = openai.api_key
+    # troca dinamicamente a chave
+    prev = openai.api_key
     openai.api_key = api_key
     resp = openai.chat.completions.create(
         model=model,
         messages=messages,
         temperature=temperature
     )
-    openai.api_key = prev_key
+    openai.api_key = prev
     return resp
 
-# ─── FUNÇÃO DE OTMIZAÇÃO DE PROMPT ─────────────────────────────────────────────
+# ─── FUNÇÃO DE OTIMIZAÇÃO DE PROMPT ────────────────────────────────────────────
 def otimizar_prompt(raw: str) -> str:
     # não comprimir textos muito curtos
     if len(raw) < 500:
         return raw
 
-    # 1) Tenta GPT-3.5
+    # 1) tenta GPT-3.5-turbo
     try:
         resp = call_openai(
             OPT_KEY,
@@ -138,58 +138,56 @@ def otimizar_prompt(raw: str) -> str:
             ]
         )
         return resp.choices[0].message.content.strip()
-    except OpenAIError as e:
-        if getattr(e, "code", "") == "insufficient_quota":
+    except Exception as e:
+        code = getattr(e, "code", "")
+        if code == "insufficient_quota":
             logging.warning("[Otimização] sem quota GPT-3.5, fallback Gemini")
         else:
             logging.warning(f"[Otimização] GPT-3.5 falhou: {e}")
 
-    # 2) Fallback: Gemini
+    # 2) fallback Gemini
     for model in GEMINI_MODELS:
         try:
             out = genai.GenerativeModel(model).generate_content([{
                 "role":"user",
-                "parts":[
-                  f"Resuma este texto ao máximo, mantendo o sentido:\n\n{raw}"
-                ]
+                "parts":[f"Resuma este texto ao máximo, mantendo o sentido:\n\n{raw}"]
             }])
             if getattr(out, "text", None):
                 return out.text.strip()
         except Exception:
             continue
 
-    # 3) Fallback local: limpeza simples
-    text = re.sub(r'\n{2,}', '\n', raw)  # remove quebras duplas
-    text = re.sub(r' +', ' ', text)      # remove multi-espaços
+    # 3) fallback local simples
+    text = re.sub(r'\n{2,}', '\n', raw)
+    text = re.sub(r' +', ' ', text)
     parts = text.split('\n\n')
     return '\n\n'.join(parts[:3]) if len(parts) > 3 else text
 
 # ─── PIPELINE DE GERAÇÃO ──────────────────────────────────────────────────────
 def gerar_resposta(contexto: str) -> str:
     system_prompt = (
-        "Você é o Kaizen, IA autônoma, direta e estratégica para Nilson Saito. "
-        "Nada de floreios."
+        "Você é o Kaizen, IA autônoma, direta e estratégica para Nilson Saito. Nada de floreios."
     )
     raw = f"{system_prompt}\n{contexto}"
 
     # pré-compressão
     prompt_otim = otimizar_prompt(raw)
 
-    # tentativa principal: GPT-4
+    # 1) GPT-4 ou 3.5 fallback
     try:
         resp = call_openai(
             MAIN_KEY,
             model="gpt-4o",
             messages=[
-                {"role":"system","content":system_prompt},
-                {"role":"user",  "content":prompt_otim}
+                {"role":"system","content": system_prompt},
+                {"role":"user",  "content": prompt_otim}
             ]
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        logging.warning(f"[GPT-4] falhou: {e}, partindo para fallback Gemini")
+        logging.warning(f"[GPT-4] falhou: {e}, tentando Gemini…")
 
-    # fallback final: Gemini
+    # 2) fallback Gemini
     for model in GEMINI_MODELS:
         try:
             out = genai.GenerativeModel(model).generate_content([{
@@ -208,12 +206,12 @@ def gerar_resposta_com_memoria(origem: str, msg: str) -> str:
     hist  = [m for m in mem if mapear_identidade(m["origem"]) == alias][-10:]
     ctx   = "\n".join(f"Usuário: {m['entrada']}\nKaizen: {m['resposta']}" for m in hist)
     ctx  += f"\nUsuário: {msg}"
-    resp = gerar_resposta(ctx)
+    resp  = gerar_resposta(ctx)
     write_memory({
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "origem":    origem,
-        "entrada":   msg,
-        "resposta":  resp
+        "origem":     origem,
+        "entrada":    msg,
+        "resposta":   resp
     })
     return resp
 
@@ -227,9 +225,8 @@ def enviar_whatsapp(to: str, msg: str):
 
 # ─── TRELLO ───────────────────────────────────────────────────────────────────
 def criar_tarefa_trello(titulo: str, descricao: str = "", due_days: int = 1):
-    due = (datetime.now(timezone.utc) + timedelta(days=due_days)) \
-          .replace(hour=9, minute=0, second=0, microsecond=0) \
-          .isoformat()
+    due = (datetime.now(timezone.utc) + timedelta(days=due_days))\
+          .replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
     payload = {
         "key":    TRELLO_KEY,
         "token":  TRELLO_TOKEN,
@@ -242,8 +239,8 @@ def criar_tarefa_trello(titulo: str, descricao: str = "", due_days: int = 1):
     try:
         r = requests.post(f"{TRELLO_API_URL}/cards", params=payload)
         r.raise_for_status()
-        c = r.json()
-        logging.info(f"[Trello] criado: {c['id']} → {titulo}")
+        card = r.json()
+        logging.info(f"[Trello] criado: {card['id']} → {titulo}")
     except Exception:
         logging.exception("[Trello] falha ao criar card")
 
@@ -252,7 +249,7 @@ def pensar_autonomamente():
     h = datetime.now(CLIENT_TZ).hour
     if   5  <= h < 9:    p = "Bom dia. Que atitude proativa tomaria hoje sem intervenção?"
     elif 12 <= h < 14:   p = "Hora do almoço. Revise sua performance e gere insight produtivo."
-    elif 18 <= h < 20:   p = "Fim do expediente. O que aprendeu e pode otimizar amanhã?"
+    elif 18 <= h < 20:   p = "Fim de expediente. O que aprendeu e pode otimizar amanhã?"
     else:                p = "Use seu julgamento. Execute algo útil com base no histórico."
     try:
         insight = gerar_resposta_com_memoria("saito", p)
