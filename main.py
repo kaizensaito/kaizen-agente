@@ -211,7 +211,6 @@ def schedule_loop():
 
 # Inserir esta thread logo após o start do autonomous_loop
 threading.Thread(target=schedule_loop, daemon=True).start()
-
     mem = read_memory()
     hist = [m for m in mem if m["origem"] == channel]
     parts, size = [], 0
