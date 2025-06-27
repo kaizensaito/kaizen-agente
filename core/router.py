@@ -1,36 +1,34 @@
 from flask import Flask, request, jsonify
+from utils.notifications import send_telegram, send_whatsapp
+from modules.llm import gerar_resposta_com_memoria, gerar_resposta
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = "7968219889:AAE0QsMpWwkVtHAY9mdsCp35vU3hqkmukOQ"
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
-    data = request.get_json()
-    if not data:
-        return jsonify({"status": "no data"}), 400
+    data = request.json
+    print("Telegram webhook recebido:", data)
+    # Aqui você pode chamar a LLM para processar a mensagem e responder
+    resposta = gerar_resposta(data)
+    # Exemplo: enviar resposta via Telegram (implemente send_telegram)
+    chat_id = data.get("message", {}).get("chat", {}).get("id")
+    if chat_id and resposta:
+        send_telegram(chat_id, resposta)
+    return jsonify({"status": "ok"})
 
-    # Processa mensagem do Telegram
-    if 'message' in data:
-        chat_id = data['message']['chat']['id']
-        text = data['message'].get('text', '')
+@app.route('/whatsapp_webhook', methods=['POST'])
+def whatsapp_webhook():
+    data = request.json
+    print("WhatsApp webhook recebido:", data)
+    resposta = gerar_resposta(data)
+    from_number = data.get("From")
+    if from_number and resposta:
+        send_whatsapp(from_number, resposta)
+    return jsonify({"status": "ok"})
 
-        # Resposta automática simples
-        resposta = f"Recebi sua mensagem: {text}"
-
-        import requests
-        send_url = f"{TELEGRAM_API_URL}/sendMessage"
-        payload = {"chat_id": chat_id, "text": resposta}
-        requests.post(send_url, json=payload)
-
-    return jsonify({"status": "ok"}), 200
-
-
-@app.route('/')
-def index():
-    return "Kaizen Agent API is up."
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "alive"})
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+
