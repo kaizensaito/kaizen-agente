@@ -8,9 +8,7 @@ app = Flask(__name__)
 def telegram_webhook():
     data = request.json
     print("Telegram webhook recebido:", data)
-    # Aqui você pode chamar a LLM para processar a mensagem e responder
     resposta = gerar_resposta(data)
-    # Exemplo: enviar resposta via Telegram (implemente send_telegram)
     chat_id = data.get("message", {}).get("chat", {}).get("id")
     if chat_id and resposta:
         send_telegram(chat_id, resposta)
@@ -29,6 +27,3 @@ def whatsapp_webhook():
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "alive"})
-
-
-
