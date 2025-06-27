@@ -1,11 +1,26 @@
-import sys, os
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+import os
+import logging
+from flask import Flask
+from core.router import app as flask_app
+from core.scheduler import iniciar_agendamentos
 
-from core.router import app
+# Configurações básicas de log
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+logging.basicConfig(
+    filename="logs/kaizen.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+
+# Envolver o app Flask
+app = Flask(__name__)
+app.register_blueprint(flask_app)
+
+# Roda tarefas agendadas
+iniciar_agendamentos()
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
