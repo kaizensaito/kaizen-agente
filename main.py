@@ -181,13 +181,21 @@ def get_file_id(svc):
         pageSize=1
     ).execute()
     files = r.get('files', [])
-    if not files:
-        raise FileNotFoundError(f"❌ Arquivo '{MEM_FILE}' não encontrado no Google Drive.")
-    return files[0]['id']
+    return files[0]['id'] if files else None
 
 def read_memory():
-    svc, buf = drive_service(), io.BytesIO()
-    dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=get_file_id(svc)))
+    svc = drive_service()
+    fid = get_file_id(svc)
+
+    if not fid:
+        logging.warning(f"[drive] arquivo '{MEM_FILE}' não encontrado — criando novo com lista vazia")
+        file_metadata = {"name": MEM_FILE}
+        media = MediaIoBaseUpload(io.BytesIO(b"[]"), mimetype="application/json")
+        file = svc.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        return []
+
+    buf = io.BytesIO()
+    dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=fid))
     while True:
         done = dl.next_chunk()[1]
         if done:
