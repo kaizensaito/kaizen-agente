@@ -1,42 +1,46 @@
-from flask import Blueprint, request, jsonify
-from modules.llm import gerar_resposta_com_memoria
-from utils.notifications import send_telegram
+import os
+import traceback
+from flask import Flask, request, jsonify
 
-router = Blueprint('router', __name__)
+app = Flask(__name__)
 
-@router.route("/", methods=["GET"])
+# Variáveis ambiente
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+@app.route('/')
 def index():
-    return "✅ Kaizen online"
+    return "Kaizen agente ativo!"
 
-@router.route("/status", methods=["GET"])
-def status():
-    return jsonify({"status": "ok"})
-
-@router.route("/ask", methods=["POST"])
-def ask():
-    data = request.get_json()
-    pergunta = data.get("pergunta")
-    if not pergunta:
-        return jsonify({"erro": "Pergunta não fornecida"}), 400
-    resposta = gerar_resposta_com_memoria(pergunta)
-    return jsonify({"resposta": resposta})
-
-@router.route("/telegram_webhook", methods=["POST"])
+@app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
-    data = request.get_json()
-    if not data:
-        return "Sem dados", 400
-
     try:
-        mensagem = data["message"]["text"]
-        chat_id = data["message"]["chat"]["id"]
-        print(f"[📩 Telegram recebido] {mensagem}")
+        data = request.get_json(force=True)
+        print("Recebido Telegram:", data)
 
-        resposta = gerar_resposta_com_memoria(mensagem)
-        print(f"[🤖 Resposta gerada] {resposta}")
+        if "message" in data and "text" in data["message"]:
+            user_text = data["message"]["text"]
+            chat_id = data["message"]["chat"]["id"]
 
-        send_telegram(chat_id, resposta)
+            # Aqui você pode processar o texto e gerar resposta automática
+            resposta = f"Memória atualizada. Resposta para: {user_text}"
+
+            # Manda a resposta de volta para Telegram (exemplo simples)
+            import requests
+            send_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            payload = {"chat_id": chat_id, "text": resposta}
+            r = requests.post(send_url, json=payload)
+            print("Resposta enviada, status:", r.status_code)
+
         return jsonify({"status": "ok"})
+
     except Exception as e:
-        print(f"[❌ ERRO webhook] {str(e)}")
-        return jsonify({"erro": str(e)}), 500
+        print("Erro no webhook Telegram:", e)
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# Outras rotas e blueprints aqui, se precisar
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
