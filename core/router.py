@@ -1,16 +1,14 @@
 import sys, os
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
-from flask import request, jsonify
-from modules.llm import gerar_resposta_com_memoria, gerar_resposta
+from flask import Flask, request, jsonify
+from modules.llm import gerar_resposta_com_memoria
 
-app = None  # Substitua essa linha pelo seu Flask app, se necessário
-
-# Exemplo de rota
-from flask import Flask
 app = Flask(__name__)
 
-@app.route('/')
+@app.route('/', methods=['GET'])
 def index():
     return "Kaizen online", 200
 
@@ -20,4 +18,6 @@ def ask():
     msg = data.get("message", "").strip()
     if not msg:
         return jsonify(error="mensagem vazia"), 400
-    return jsonify(reply=gerar_resposta_com_memoria("web", msg))
+
+    reply = gerar_resposta_com_memoria("web", msg)
+    return jsonify(reply=reply)
