@@ -21,7 +21,7 @@ import google.generativeai as genai
 TZ = ZoneInfo("America/Sao_Paulo")
 KAIZEN_EMAIL = "kaizen.saito.ai@gmail.com"
 SAITO_EMAIL = "nilson.saito@gmail.com"
-WHATSAPP_API_URL = "https://api.twilio.com"  # placeholder, não usamos diretamente aqui
+WHATSAPP_API_URL = "https://api.twilio.com"  # placeholder
 HEARTBEAT_HORA = "18:00"
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY", "")
 TRELLO_TOKEN = os.getenv("TRELLO_TOKEN", "")
@@ -75,10 +75,16 @@ def criar_tarefa_trello(titulo, descricao):
 def rotina_checagem():
     logging.info("Executando rotina de checagem.")
     try:
-        # Aqui vai o que estiver rodando no core
         criar_tarefa_trello("Check Kaizen", f"Status verificado às {datetime.now(TZ)}")
     except Exception as e:
         logging.error(f"Erro na rotina de checagem: {e}")
+
+# ==== UTILITÁRIOS GOOGLE DRIVE ====
+def get_file_id(svc):
+    r = svc.files().list(q="name='kaizen_memory.json'", fields="files(id)").execute()
+    if not r.get('files'):
+        raise FileNotFoundError("Arquivo 'kaizen_memory.json' não encontrado no Drive.")
+    return r['files'][0]['id']
 
 # ==== LOOP DE AÇÕES PROGRAMADAS ====
 def iniciar_agendamentos():
