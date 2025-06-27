@@ -1,15 +1,20 @@
-flask==3.1.1
-twilio==9.6.3
+# Web framework
+Flask==3.1.1
+
+# HTTP, agendamento e utilitários
 requests==2.32.4
-pytz
-flask
-twilio
-openai>=1.0.0
-google-auth
-google-api-python-client
+schedule==1.2.0
+python-dateutil==2.8.2
+pytz==2024.1
+
+# Ambientes
 python-dotenv==1.0.1
-google-generativeai
-python-dateutil>=2.8.2
-python-dotenv
-requests
-schedule
+
+# LLMs e Google APIs
+openai==0.27.8
+google-generativeai==0.1.2
+google-auth==2.24.1
+google-api-python-client==2.80.0
+
+# Twilio para WhatsApp/SM
+twilio==9.6.3
