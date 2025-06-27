@@ -1,103 +1,95 @@
-
-import os
-import io
-import json
-import time
-import threading
-import logging
-import requests
-import smtplib
-import schedule
-
-from datetime import datetime, timedelta
+import os, io, json, time, threading, logging, requests, schedule, smtplib
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from zoneinfo import ZoneInfo
 
-import openai
-import google.generativeai as genai
+from dotenv import load_dotenv
+load_dotenv()
 
-# ==== CONFIGURAÇÕES GERAIS ====
-TZ = ZoneInfo("America/Sao_Paulo")
-KAIZEN_EMAIL = "kaizen.saito.ai@gmail.com"
-SAITO_EMAIL = "nilson.saito@gmail.com"
-WHATSAPP_API_URL = "https://api.twilio.com"  # placeholder
-HEARTBEAT_HORA = "18:00"
-TRELLO_API_KEY = os.getenv("TRELLO_API_KEY", "")
-TRELLO_TOKEN = os.getenv("TRELLO_TOKEN", "")
-TRELLO_BOARD_ID = os.getenv("TRELLO_BOARD_ID", "")
-TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID", "")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# ========== CONFIGURAÇÕES ==========
+EMAIL_ORIGEM = os.getenv("EMAIL_ORIGEM")
+EMAIL_DESTINO = os.getenv("EMAIL_DESTINO")
+EMAIL_SENHA = os.getenv("EMAIL_SENHA")
 
-# ==== LOGGING ====
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+WHATSAPP_API_URL = os.getenv("WHATSAPP_API_URL")  # Endpoint do Twilio ou similar
+WHATSAPP_NUMERO = os.getenv("WHATSAPP_NUMERO")
 
-# ==== HEARTBEAT ====
-def enviar_heartbeat():
-    logging.info("Enviando heartbeat por e-mail...")
+TRELLO_KEY = os.getenv("TRELLO_KEY")
+TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
+TRELLO_BOARD_ID = os.getenv("TRELLO_BOARD_ID")
+TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID")
+
+TIMEZONE = ZoneInfo("America/Sao_Paulo")
+
+# ========== LOG ==========
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# ========== FUNÇÕES ==========
+def enviar_email(assunto, corpo):
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_ORIGEM
+    msg['To'] = EMAIL_DESTINO
+    msg['Subject'] = assunto
+    msg.attach(MIMEText(corpo, 'plain'))
+
     try:
-        msg = MIMEMultipart()
-        msg["From"] = KAIZEN_EMAIL
-        msg["To"] = SAITO_EMAIL
-        msg["Subject"] = "KAIZEN - Heartbeat Diário"
-
-        corpo = f"Status OK às {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')}."
-        msg.attach(MIMEText(corpo, "plain"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(KAIZEN_EMAIL, os.getenv("KAIZEN_EMAIL_PASSWORD"))
-            server.sendmail(KAIZEN_EMAIL, SAITO_EMAIL, msg.as_string())
-        logging.info("E-mail enviado com sucesso.")
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(EMAIL_ORIGEM, EMAIL_SENHA)
+            server.send_message(msg)
+            logging.info("Email enviado com sucesso.")
     except Exception as e:
-        logging.error(f"Erro ao enviar heartbeat: {e}")
+        logging.error(f"Erro ao enviar e-mail: {e}")
 
-# ==== TRELLO ====
-def criar_tarefa_trello(titulo, descricao):
-    logging.info("Criando tarefa no Trello...")
-    url = f"https://api.trello.com/1/cards"
-    query = {
-        "key": TRELLO_API_KEY,
-        "token": TRELLO_TOKEN,
-        "idList": TRELLO_LIST_ID,
-        "name": titulo,
-        "desc": descricao
+def enviar_whatsapp(mensagem):
+    payload = {
+        "to": WHATSAPP_NUMERO,
+        "message": mensagem
     }
     try:
-        r = requests.post(url, params=query)
-        r.raise_for_status()
-        logging.info("Tarefa criada com sucesso.")
+        response = requests.post(WHATSAPP_API_URL, json=payload)
+        response.raise_for_status()
+        logging.info("Mensagem enviada via WhatsApp.")
     except Exception as e:
-        logging.error(f"Erro ao criar tarefa no Trello: {e}")
+        logging.error(f"Erro ao enviar WhatsApp: {e}")
 
-# ==== MONITORAMENTO ====
-def rotina_checagem():
-    logging.info("Executando rotina de checagem.")
+def criar_card_trello(titulo, descricao=""):
+    url = f"https://api.trello.com/1/cards"
+    params = {
+        "name": titulo,
+        "desc": descricao,
+        "idList": TRELLO_LIST_ID,
+        "key": TRELLO_KEY,
+        "token": TRELLO_TOKEN
+    }
     try:
-        criar_tarefa_trello("Check Kaizen", f"Status verificado às {datetime.now(TZ)}")
+        response = requests.post(url, params=params)
+        response.raise_for_status()
+        logging.info("Card criado no Trello.")
     except Exception as e:
-        logging.error(f"Erro na rotina de checagem: {e}")
+        logging.error(f"Erro ao criar card Trello: {e}")
 
-# ==== UTILITÁRIOS GOOGLE DRIVE ====
-def get_file_id(svc):
-    r = svc.files().list(q="name='kaizen_memory.json'", fields="files(id)").execute()
-    if not r.get('files'):
-        raise FileNotFoundError("Arquivo 'kaizen_memory.json' não encontrado no Drive.")
-    return r['files'][0]['id']
+# ========== HEARTBEAT ==========
+def heartbeat():
+    agora = datetime.now(TIMEZONE)
+    msg = f"🧠 Kaizen ativo\n🕒 Horário: {agora.strftime('%d/%m/%Y %H:%M:%S')}"
+    logging.info(msg)
+    enviar_email("✅ Heartbeat Kaizen", msg)
+    enviar_whatsapp(msg)
 
-# ==== LOOP DE AÇÕES PROGRAMADAS ====
-def iniciar_agendamentos():
-    logging.info("Iniciando agendamentos.")
-    schedule.every().day.at(HEARTBEAT_HORA).do(enviar_heartbeat)
-    schedule.every(1).hours.do(rotina_checagem)
+# ========== LOOP PRINCIPAL ==========
+def loop_monitoramento():
+    schedule.every(3).hours.do(heartbeat)  # A cada 3 horas
 
     while True:
-        schedule.run_pending()
-        time.sleep(10)
+        try:
+            schedule.run_pending()
+            time.sleep(10)
+        except Exception as e:
+            logging.error(f"Erro no loop principal: {e}")
+            time.sleep(30)
 
-# ==== THREAD ====
+# ========== THREAD ==========
 if __name__ == "__main__":
-    logging.info("KAIZEN MAIN INICIADO")
-    t = threading.Thread(target=iniciar_agendamentos)
-    t.start()
+    logging.info("Kaizen iniciado com sucesso.")
+    threading.Thread(target=loop_monitoramento).start()
