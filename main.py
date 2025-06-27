@@ -14,6 +14,16 @@ from googleapiclient.discovery import build as build_drive
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from twilio.rest import Client
 
+# 🔎 Ferramenta para buscar conteúdo na web
+def fetch_url_content(url, max_chars=5000):
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        text = r.text
+        return text[:max_chars]
+    except Exception as e:
+        return f"❌ Erro ao buscar {url}: {e}"
+
 # ⚙️ CONFIG
 load_dotenv()
 app = Flask(__name__)
@@ -22,19 +32,19 @@ MEMORY_LOCK = threading.Lock()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # 🔐 VARS
-OPENAI_KEY       = os.getenv("OPENAI_API_KEY_MAIN")
-GEMINI_KEY       = os.getenv("GEMINI_API_KEY")
-HF_TOKEN         = os.getenv("HUGGINGFACE_API_TOKEN")
-OR_KEY           = os.getenv("OPENROUTER_API_KEY")
-GOOGLE_CREDS     = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON", "{}"))
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OPENAI_KEY         = os.getenv("OPENAI_API_KEY_MAIN")
+GEMINI_KEY         = os.getenv("GEMINI_API_KEY")
+HF_TOKEN           = os.getenv("HUGGINGFACE_API_TOKEN")
+OR_KEY             = os.getenv("OPENROUTER_API_KEY")
+GOOGLE_CREDS       = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON", "{}"))
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM         = os.getenv("TWILIO_FROM_NUMBER")
-TWILIO_TO           = os.getenv("TWILIO_TO_NUMBER")
-GMAIL_USER          = os.getenv("GMAIL_USER")
-GMAIL_PASS          = os.getenv("GMAIL_PASS")
+TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM        = os.getenv("TWILIO_FROM_NUMBER")
+TWILIO_TO          = os.getenv("TWILIO_TO_NUMBER")
+GMAIL_USER         = os.getenv("GMAIL_USER")
+GMAIL_PASS         = os.getenv("GMAIL_PASS")
 
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
@@ -110,28 +120,28 @@ if OPENAI_KEY:
     ALL_PROVIDERS["copilot"]       = call_copilot
 
 # 🔁 Fallback/caching
-FALLBACK_ORDER   = [p for p in ["gemini","mistral","openrouter","gpt-3.5-turbo","copilot"] if p in ALL_PROVIDERS]
-usage_counters   = {p: 0 for p in FALLBACK_ORDER}
-DAILY_LIMITS     = {"gemini": 50}
-CACHE            = {}
-_fallback_lock   = threading.Lock()
+FALLBACK_ORDER = [p for p in ["gemini","mistral","openrouter","gpt-3.5-turbo","copilot"] if p in ALL_PROVIDERS]
+usage_counters = {p: 0 for p in FALLBACK_ORDER}
+DAILY_LIMITS   = {"gemini": 50}
+CACHE          = {}
+_fallback_lock = threading.Lock()
 
-def within_limit(provider):
-    return usage_counters[provider] < DAILY_LIMITS.get(provider, float("inf"))
+def within_limit(p):
+    return usage_counters[p] < DAILY_LIMITS.get(p, float("inf"))
 
-def cached(provider, fn, txt):
-    return CACHE.setdefault((provider, txt), fn(txt))
+def cached(p, fn, txt):
+    return CACHE.setdefault((p, txt), fn(txt))
 
 def build_context(channel, msg):
     mem = read_memory()
     hist = [m for m in mem if m["origem"] == channel]
     parts, size = [], 0
     for h in reversed(hist):
-        snippet = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
-        if size + len(snippet) > MAX_CTX * 0.8:
+        b = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
+        if size + len(b) > MAX_CTX * 0.8:
             break
-        parts.insert(0, snippet)
-        size += len(snippet)
+        parts.insert(0, b)
+        size += len(b)
     parts.append(f"Usuário: {msg}")
     ctx = SYSTEM_PROMPT + "\n" + "".join(parts)
     return ctx[-MAX_CTX:] if len(ctx) > MAX_CTX else ctx
@@ -193,7 +203,7 @@ def read_memory():
         logging.warning(f"[drive] '{MEM_FILE}' não encontrado, criando novo")
         meta  = {"name": MEM_FILE}
         media = MediaIoBaseUpload(io.BytesIO(b"[]"), mimetype="application/json")
-        created = svc.files().create(body=meta, media_body=media, fields="id").execute()
+        svc.files().create(body=meta, media_body=media, fields="id").execute()
         return []
     buf = io.BytesIO()
     dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=fid))
@@ -336,6 +346,14 @@ def ask():
     msg = data.get("message", "").strip()
     if not msg:
         return jsonify(error="mensagem vazia"), 400
+
+    # intercepta busca real
+    if msg.lower().startswith(('/fetch ', '/buscar ')):
+        url = msg.split(None,1)[1]
+        content = fetch_url_content(url)
+        summary = gerar_resposta(f"Resuma este conteúdo da web:\n\n{content}")
+        return jsonify(raw=content, summary=summary)
+
     return jsonify(reply=gerar_resposta_com_memoria("web", msg))
 
 @app.route('/usage', methods=['GET'])
@@ -357,6 +375,15 @@ def telegram_webhook():
     payload = request.get_json(force=True).get("message", {})
     txt = payload.get("text", "").strip()
     cid = str(payload.get("chat", {}).get("id", ""))
+
+    # intercepta busca real
+    if txt.lower().startswith(('/fetch ', '/buscar ')):
+        url = txt.split(None,1)[1]
+        content = fetch_url_content(url)
+        summary = gerar_resposta(f"Resuma este conteúdo da web:\n\n{content}")
+        send_telegram(cid, f"🔎 Conteúdo:\n{content[:500]}\n\n📝 Resumo:\n{summary}")
+        return jsonify(ok=True)
+
     if not txt:
         send_telegram(cid, "⚠️ Mensagem vazia.")
     else:
@@ -364,7 +391,7 @@ def telegram_webhook():
         send_telegram(cid, resp)
     return jsonify(ok=True)
 
-# ▶️ Inicia loops em background
+# ▶️ Inicia threads em background
 threading.Thread(target=autonomous_loop, daemon=True).start()
 threading.Thread(target=reset_daily_counters, daemon=True).start()
 threading.Thread(target=schedule_loop, daemon=True).start()
