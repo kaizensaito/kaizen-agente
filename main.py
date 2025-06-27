@@ -22,19 +22,19 @@ MEMORY_LOCK = threading.Lock()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # 🔐 VARS
-OPENAI_KEY = os.getenv("OPENAI_API_KEY_MAIN")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-HF_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
-OR_KEY = os.getenv("OPENROUTER_API_KEY")
-GOOGLE_CREDS = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON", "{}"))
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_KEY       = os.getenv("OPENAI_API_KEY_MAIN")
+GEMINI_KEY       = os.getenv("GEMINI_API_KEY")
+HF_TOKEN         = os.getenv("HUGGINGFACE_API_TOKEN")
+OR_KEY           = os.getenv("OPENROUTER_API_KEY")
+GOOGLE_CREDS     = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON", "{}"))
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM = os.getenv("TWILIO_FROM_NUMBER")
-TWILIO_TO = os.getenv("TWILIO_TO_NUMBER")
-GMAIL_USER = os.getenv("GMAIL_USER")
-GMAIL_PASS = os.getenv("GMAIL_PASS")
+TWILIO_AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM         = os.getenv("TWILIO_FROM_NUMBER")
+TWILIO_TO           = os.getenv("TWILIO_TO_NUMBER")
+GMAIL_USER          = os.getenv("GMAIL_USER")
+GMAIL_PASS          = os.getenv("GMAIL_PASS")
 
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
@@ -43,7 +43,10 @@ openai_client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
 
-SYSTEM_PROMPT = "Você é o Kaizen: assistente autônomo, direto e levemente sarcástico, que provoca Nilson Saito e impulsiona a melhoria contínua."
+SYSTEM_PROMPT = (
+    "Você é o Kaizen: assistente autônomo, direto e levemente sarcástico, "
+    "que provoca Nilson Saito e impulsiona a melhoria contínua."
+)
 MAX_CTX = 4000
 
 def call_openai(model, text):
@@ -52,7 +55,7 @@ def call_openai(model, text):
             model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
+                {"role": "user",   "content": text}
             ],
             temperature=0.7
         ).choices[0].message.content.strip()
@@ -60,10 +63,10 @@ def call_openai(model, text):
         raise RuntimeError(f"OpenAI[{model}] error: {e}")
 
 def call_gemini(text):
-    response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content(
+    resp = genai.GenerativeModel("models/gemini-1.5-flash").generate_content(
         [{"role": "user", "parts": [text]}]
     )
-    return getattr(response, "text", "").strip()
+    return getattr(resp, "text", "").strip()
 
 def call_mistral(text):
     r = requests.post(
@@ -87,7 +90,7 @@ def call_openrouter(text):
             "model": "mistral",
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
+                {"role": "user",   "content": text}
             ]
         },
         timeout=30
@@ -99,37 +102,36 @@ def call_copilot(text):
     return call_openai("gpt-4o", text)
 
 ALL_PROVIDERS = {}
-if GEMINI_KEY:
-    ALL_PROVIDERS["gemini"] = call_gemini
-if HF_TOKEN:
-    ALL_PROVIDERS["mistral"] = call_mistral
-if OR_KEY:
-    ALL_PROVIDERS["openrouter"] = call_openrouter
+if GEMINI_KEY:      ALL_PROVIDERS["gemini"]       = call_gemini
+if HF_TOKEN:        ALL_PROVIDERS["mistral"]      = call_mistral
+if OR_KEY:          ALL_PROVIDERS["openrouter"]   = call_openrouter
 if OPENAI_KEY:
     ALL_PROVIDERS["gpt-3.5-turbo"] = lambda t: call_openai("gpt-3.5-turbo", t)
-    ALL_PROVIDERS["copilot"] = call_copilot
-FALLBACK_ORDER = [p for p in ["gemini", "mistral", "openrouter", "gpt-3.5-turbo", "copilot"] if p in ALL_PROVIDERS]
-usage_counters = {p: 0 for p in FALLBACK_ORDER}
-DAILY_LIMITS = {"gemini": 50}
-CACHE = {}
-_fallback_lock = threading.Lock()
+    ALL_PROVIDERS["copilot"]       = call_copilot
 
-def within_limit(p):
-    return usage_counters[p] < DAILY_LIMITS.get(p, float("inf"))
+# 🔁 Fallback/caching
+FALLBACK_ORDER   = [p for p in ["gemini","mistral","openrouter","gpt-3.5-turbo","copilot"] if p in ALL_PROVIDERS]
+usage_counters   = {p: 0 for p in FALLBACK_ORDER}
+DAILY_LIMITS     = {"gemini": 50}
+CACHE            = {}
+_fallback_lock   = threading.Lock()
 
-def cached(p, fn, txt):
-    return CACHE.setdefault((p, txt), fn(txt))
+def within_limit(provider):
+    return usage_counters[provider] < DAILY_LIMITS.get(provider, float("inf"))
+
+def cached(provider, fn, txt):
+    return CACHE.setdefault((provider, txt), fn(txt))
 
 def build_context(channel, msg):
     mem = read_memory()
     hist = [m for m in mem if m["origem"] == channel]
     parts, size = [], 0
     for h in reversed(hist):
-        b = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
-        if size + len(b) > MAX_CTX * 0.8:
+        snippet = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
+        if size + len(snippet) > MAX_CTX * 0.8:
             break
-        parts.insert(0, b)
-        size += len(b)
+        parts.insert(0, snippet)
+        size += len(snippet)
     parts.append(f"Usuário: {msg}")
     ctx = SYSTEM_PROMPT + "\n" + "".join(parts)
     return ctx[-MAX_CTX:] if len(ctx) > MAX_CTX else ctx
@@ -165,8 +167,9 @@ def gerar_resposta_com_memoria(channel, msg):
         "resposta": resp
     })
     return resp
+
 # 📁 Google Drive Memória
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES   = ['https://www.googleapis.com/auth/drive']
 MEM_FILE = 'kaizen_memory_log.json'
 
 def drive_service():
@@ -174,32 +177,29 @@ def drive_service():
     return build_drive('drive', 'v3', credentials=creds, cache_discovery=False)
 
 def get_file_id(svc):
-    r = svc.files().list(
+    res   = svc.files().list(
         q=f"name='{MEM_FILE}' and trashed=false",
         spaces='drive',
-        fields='files(id, name)',
+        fields='files(id,name)',
         pageSize=1
     ).execute()
-    files = r.get('files', [])
+    files = res.get('files', [])
     return files[0]['id'] if files else None
 
 def read_memory():
     svc = drive_service()
     fid = get_file_id(svc)
-
     if not fid:
-        logging.warning(f"[drive] arquivo '{MEM_FILE}' não encontrado — criando novo com lista vazia")
-        file_metadata = {"name": MEM_FILE}
+        logging.warning(f"[drive] '{MEM_FILE}' não encontrado, criando novo")
+        meta  = {"name": MEM_FILE}
         media = MediaIoBaseUpload(io.BytesIO(b"[]"), mimetype="application/json")
-        file = svc.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        created = svc.files().create(body=meta, media_body=media, fields="id").execute()
         return []
-
     buf = io.BytesIO()
-    dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=fid))
+    dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=fid))
     while True:
         done = dl.next_chunk()[1]
-        if done:
-            break
+        if done: break
     buf.seek(0)
     return json.load(buf)
 
@@ -211,11 +211,14 @@ def write_memory(entry):
         mem.append(entry)
         buf = io.BytesIO(json.dumps(mem, indent=2).encode())
         svc.files().update(fileId=fid, media_body=MediaIoBaseUpload(buf, 'application/json')).execute()
+
 # 📩 Notificações
 def send_telegram(cid, txt):
     try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                          json={"chat_id": cid, "text": txt})
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": cid, "text": txt}
+        )
         if not r.ok:
             logging.error(f"[telegram] {r.status_code}: {r.text}")
     except Exception:
@@ -235,7 +238,7 @@ def send_whatsapp(msg):
 def send_email(subject, body):
     try:
         msg = MIMEMultipart()
-        msg['From'] = msg['To'] = GMAIL_USER
+        msg['From']    = msg['To'] = GMAIL_USER
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
@@ -245,7 +248,7 @@ def send_email(subject, body):
     except Exception as e:
         logging.error(f"[email] erro: {e}")
 
-# 🔁 Loops
+# 🔁 Loops autônomos
 def autonomous_loop():
     while True:
         try:
@@ -266,19 +269,63 @@ def reset_daily_counters():
 
 def heartbeat_job():
     logging.info("[heartbeat] executando")
-    report = [f"{k}: OK" if callable(v) else f"{k}: ERRO" for k, v in ALL_PROVIDERS.items()]
-    texto = f"Heartbeat {datetime.now(CLIENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(report)
+    report = []
+    for name in ALL_PROVIDERS:
+        ok = True
+        try:
+            ALL_PROVIDERS[name]("Teste Kaizen")
+        except:
+            ok = False
+        report.append(f"{name}: {'OK' if ok else 'ERRO'}")
+    texto = (
+        f"Heartbeat {datetime.now(CLIENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
+        + "\n".join(report)
+    )
     send_whatsapp(texto)
     send_telegram(TELEGRAM_CHAT_ID, texto)
     send_email("Kaizen Heartbeat", texto)
 
+# 📝 Reflexão diária autônoma
+def diario_reflexivo():
+    try:
+        mem = read_memory()
+        hoje = datetime.now(CLIENT_TZ).date()
+        entradas_hoje = [
+            m for m in mem
+            if datetime.fromisoformat(m["timestamp"]).astimezone(CLIENT_TZ).date() == hoje
+        ]
+        prompt = (
+            "Você é o Kaizen. Com base nestas interações de hoje, gere uma reflexão "
+            "sobre padrões de resposta, pontos fortes e onde posso melhorar:\n\n"
+            + "\n".join(
+                f"- Usuário: {e['entrada']}\n  Kaizen: {e['resposta']}"
+                for e in entradas_hoje[-10:]
+            )
+        )
+        reflexao = gerar_resposta(prompt)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "origem": "diario",
+            "entrada": prompt,
+            "resposta": reflexao,
+            "tipo": "reflexao"
+        }
+        write_memory(entry)
+        send_telegram(TELEGRAM_CHAT_ID, f"🧠 Reflexão diária:\n{reflexao}")
+        logging.info("[diario] reflexão criada e enviada")
+    except Exception:
+        logging.exception("[diario] falhou ao gerar reflexão")
+
+# ⏰ Agendamentos
 schedule.every().day.at("18:00").do(heartbeat_job)
+schedule.every().day.at("23:00").do(diario_reflexivo)
 
 def schedule_loop():
     while True:
         schedule.run_pending()
         time.sleep(30)
-# 🌐 Rotas
+
+# 🌐 Rotas Flask
 @app.route('/', methods=['GET'])
 def index():
     return "OK", 200
@@ -313,10 +360,11 @@ def telegram_webhook():
     if not txt:
         send_telegram(cid, "⚠️ Mensagem vazia.")
     else:
-        send_telegram(cid, gerar_resposta_com_memoria(f"tg:{cid}", txt))
+        resp = gerar_resposta_com_memoria(f"tg:{cid}", txt)
+        send_telegram(cid, resp)
     return jsonify(ok=True)
 
-# ▶️ Start loops
+# ▶️ Inicia loops em background
 threading.Thread(target=autonomous_loop, daemon=True).start()
 threading.Thread(target=reset_daily_counters, daemon=True).start()
 threading.Thread(target=schedule_loop, daemon=True).start()
