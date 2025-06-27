@@ -12,9 +12,9 @@ python-dotenv==1.0.1
 
 # LLMs e Google APIs
 openai==0.27.8
-google-generativeai>=0.3.0
-google-auth==2.24.1
+google-generativeai==0.3.2
+google-auth==2.25.0
 google-api-python-client==2.80.0
 
-# Twilio para WhatsApp/SM
+# Twilio para WhatsApp/SMS
 twilio==9.6.3
