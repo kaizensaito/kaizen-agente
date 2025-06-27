@@ -1,4 +1,3 @@
-# Dockerfile
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1
@@ -13,4 +12,4 @@ RUN pip install --no-cache-dir -U pip \
 
 EXPOSE $PORT
 
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "core.router:app"]
+CMD ["python3", "-m", "core.main"]
