@@ -1,30 +1,37 @@
 from flask import Flask, request, jsonify
-from modules.llm import gerar_resposta_com_memoria, gerar_resposta
-from utils.notifications import send_telegram, send_whatsapp
+import os
+import requests
 
 app = Flask(__name__)
 
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"status": "OK", "message": "Kaizen Agente ativo"})
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    dados = request.json
-    prompt = dados.get("prompt")
-    if not prompt:
-        return jsonify({"error": "Prompt obrigatório"}), 400
+def send_telegram(chat_id, text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        resp = requests.post(url, json=payload)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"Erro ao enviar Telegram: {e}")
+        return False
 
-    resposta = gerar_resposta_com_memoria(prompt)
-    return jsonify({"resposta": resposta})
+@app.route("/telegram_webhook", methods=["POST"])
+def telegram_webhook():
+    data = request.json
+    if not data or "message" not in data:
+        return jsonify({"ok": True})
 
-@app.route("/notify", methods=["POST"])
-def notify():
-    dados = request.json
-    msg = dados.get("message")
-    if not msg:
-        return jsonify({"error": "Message obrigatório"}), 400
+    chat_id = data["message"]["chat"]["id"]
+    text = data["message"].get("text", "")
+    
+    # Responde com o mesmo texto recebido, pode mudar para lógica real
+    reply = f"Recebi sua mensagem: {text}"
+    send_telegram(chat_id, reply)
+    
+    return jsonify({"ok": True})
 
-    send_telegram(msg)
-    send_whatsapp(msg)
-    return jsonify({"status": "notificações enviadas"})
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
