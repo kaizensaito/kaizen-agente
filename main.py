@@ -147,8 +147,17 @@ def drive_service():
     return build_drive('drive', 'v3', credentials=creds, cache_discovery=False)
 
 def get_file_id(svc):
-    r = svc.files().list(q=f"name='{MEM_FILE}'", spaces='drive', fields='files(id)').execute()
-    return r['files'][0]['id']
+    r = svc.files().list(
+        q=f"name='{MEM_FILE}' and trashed=false",
+        spaces='drive',
+        fields='files(id, name)',
+        pageSize=1
+    ).execute()
+
+    files = r.get('files', [])
+    if not files:
+        raise FileNotFoundError(f"❌ Arquivo '{MEM_FILE}' não encontrado no Google Drive.")
+    return files[0]['id']
 
 def read_memory():
     svc, buf = drive_service(), io.BytesIO()
@@ -188,79 +197,4 @@ def send_email(subject, body):
         msg = MIMEMultipart()
         msg['From'], msg['To'], msg['Subject'] = GMAIL_USER, GMAIL_USER, subject
         msg.attach(MIMEText(body, 'plain'))
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(GMAIL_USER, GMAIL_PASS)
-            server.send_message(msg)
-        logging.info("[email] enviado")
-    except Exception as e:
-        logging.error(f"[email] erro: {e}")
-
-# 🔁 Loops
-def autonomous_loop():
-    while True:
-        try:
-            insight = gerar_resposta_com_memoria("saito", "Gere um insight produtivo.")
-            send_telegram(TELEGRAM_CHAT_ID, insight)
-        except: logging.exception("[auto] falhou")
-        time.sleep(4 * 3600)
-
-def reset_daily_counters():
-    while True:
-        now = datetime.now(timezone.utc)
-        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        time.sleep((nxt - now).total_seconds())
-        for k in usage_counters: usage_counters[k] = 0
-        logging.info("[quota] resetada")
-
-def heartbeat_job():
-    logging.info("[heartbeat] executando")
-    report = [f"{k}: OK" if callable(v) else f"{k}: ERRO" for k,v in ALL_PROVIDERS.items()]
-    texto = f"Heartbeat {datetime.now(CLIENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(report)
-    send_whatsapp(texto)
-    send_telegram(TELEGRAM_CHAT_ID, texto)
-    send_email("Kaizen Heartbeat", texto)
-
-schedule.every().day.at("18:00").do(heartbeat_job)
-
-def schedule_loop():
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
-
-# 🌐 Rotas
-@app.route('/', methods=['GET'])
-def index(): return "OK", 200
-
-@app.route('/ask', methods=['POST'])
-def ask():
-    data = request.get_json(force=True)
-    msg = data.get("message", "").strip()
-    return jsonify(reply=gerar_resposta_com_memoria("web", msg)) if msg else jsonify(error="mensagem vazia"), 400
-
-@app.route('/usage', methods=['GET'])
-def usage(): return jsonify(usage_counters)
-
-@app.route('/test_llm', methods=['GET'])
-def test_llm():
-    out = {}
-    for name, fn in ALL_PROVIDERS.items():
-        try: out[name] = {"ok": True, "reply": fn("Teste Kaizen")}
-        except Exception as e: out[name] = {"ok": False, "error": str(e)}
-    return jsonify(out)
-
-@app.route('/telegram_webhook', methods=['POST'])
-def telegram_webhook():
-    payload = request.get_json(force=True).get("message", {})
-    txt = payload.get("text", "").strip()
-    cid = str(payload.get("chat", {}).get("id", ""))
-    if not txt: send_telegram(cid, "⚠️ Mensagem vazia.")
-    else: send_telegram(cid, gerar_resposta_com_memoria(f"tg:{cid}", txt))
-    return jsonify(ok=True)
-
-# ▶️ Start loops
-threading.Thread(target=autonomous_loop, daemon=True).start()
-threading.Thread(target=reset_daily_counters, daemon=True).start()
-threading.Thread(target=schedule_loop, daemon=True).start()
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+        with smtplib.SMTP
