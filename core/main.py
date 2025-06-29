@@ -128,11 +128,10 @@ def ask():
         return jsonify(error="mensagem vazia"), 400
 
     if msg.lower().startswith(('/fetch ', '/buscar ')):
-        url = msg.split(None, 1)[1]
-        content = fetch_url_content(url)
-        resumo = gerar_resposta_com_memoria("web", f"Resuma:
-{content}")
-        return jsonify(raw=content, summary=resumo)
+    url = msg.split(None, 1)[1]
+    content = fetch_url_content(url)
+    summary = gerar_resposta(f"Resuma este conteúdo da web:\n\n{content}")
+    return jsonify(raw=content, summary=summary)
 
     if msg.lower().startswith('/cotacao ') or is_product_query(msg):
         produto = msg.split(None, 1)[1] if msg.lower().startswith('/cotacao ') else extract_product_name(msg)
