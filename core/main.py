@@ -1,3 +1,5 @@
+# core/main.py
+
 import os
 import io
 import json
@@ -23,13 +25,97 @@ from googleapiclient.discovery import build as build_drive
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from twilio.rest import Client
 
-# CONFIGURAÇÕES E VARIÁVEIS
+# 🔎 Ferramenta para buscar conteúdo na web
+def fetch_url_content(url, max_chars=5000):
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        return r.text[:max_chars]
+    except Exception as e:
+        return f"❌ Erro ao buscar {url}: {e}"
+
+# ── BUSCAS DE PRODUTO ───────────────────────────────────────────────────────────
+def search_mercadolivre_api(query, limit=3):
+    url = "https://api.mercadolibre.com/sites/MLB/search"
+    r = requests.get(url, params={"q": query, "limit": limit}, timeout=10)
+    r.raise_for_status()
+    return [
+        {
+            "site": "MercadoLivre",
+            "title": item["title"],
+            "price": f"R$ {item['price']:.2f}",
+            "link": item["permalink"]
+        }
+        for item in r.json().get("results", [])[:limit]
+    ]
+
+def search_shopee_scrape(query, limit=3):
+    url = f"https://shopee.com.br/search?keyword={requests.utils.quote(query)}"
+    html = fetch_url_content(url, max_chars=200000)
+    soup = BeautifulSoup(html, "html.parser")
+    cards = soup.select("div._1gkBDw")[:limit]
+    out = []
+    for c in cards:
+        a = c.select_one("a._3NOHu2")
+        if not a:
+            continue
+        title = a.get_text(strip=True)
+        link = "https://shopee.com.br" + a["href"]
+        whole = c.select_one("span._29R_un")
+        dec = c.select_one("span._1qL5G9")
+        price = (whole.get_text() + (dec.get_text() if dec else "")).replace(",", ".")
+        out.append({"site": "Shopee", "title": title, "price": f"R$ {price}", "link": link})
+    return out
+
+def search_amazon_scrape(query, limit=3):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    url = f"https://www.amazon.com.br/s?k={requests.utils.quote(query)}"
+    html = fetch_url_content(url, max_chars=200000)
+    soup = BeautifulSoup(html, "html.parser")
+    cards = soup.select("div.s-result-item[data-component-type='s-search-result']")[:limit]
+    out = []
+    for c in cards:
+        t = c.select_one("span.a-size-medium.a-color-base.a-text-normal")
+        p = c.select_one("span.a-offscreen")
+        a = c.select_one("a.a-link-normal.a-text-normal, a.a-link-normal.s-no-outline")
+        if not (t and p and a):
+            continue
+        out.append({
+            "site": "Amazon",
+            "title": t.get_text(strip=True),
+            "price": p.get_text(strip=True),
+            "link": "https://www.amazon.com.br" + a["href"]
+        })
+    return out
+
+# ── NLU SIMPLES ────────────────────────────────────────────────────────────────
+def is_product_query(text):
+    return bool(re.search(r"\b(preciso|quero|comprar|valor|preço)\b", text.lower()))
+
+def extract_product_name(text):
+    patterns = [
+        r"preciso (?:do|da|de)\s+(.+)",
+        r"quero\s+comprar\s+(.+)",
+        r"quero\s+(.+)",
+        r"comprar\s+(.+)",
+        r"valor (?:de|do|da)\s+(.+)",
+        r"preço (?:de|do|da)\s+(.+)"
+    ]
+    tl = text.lower()
+    for pat in patterns:
+        m = re.search(pat, tl)
+        if m:
+            return m.group(1).strip()
+    return text
+
+# ⚙️ CONFIG
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 app = Flask(__name__)
 CLIENT_TZ = ZoneInfo("America/Sao_Paulo")
 MEMORY_LOCK = threading.Lock()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+# 🔐 VARS
 OPENAI_KEY         = os.getenv("OPENAI_API_KEY_MAIN")
 GEMINI_KEY         = os.getenv("GEMINI_API_KEY")
 HF_TOKEN           = os.getenv("HUGGINGFACE_API_TOKEN")
@@ -46,7 +132,7 @@ GMAIL_PASS         = os.getenv("GMAIL_PASS")
 
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# LLM WRAPPERS
+# 🤖 LLM WRAPPERS
 openai_client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
@@ -58,15 +144,23 @@ SYSTEM_PROMPT = (
 MAX_CTX = 4000
 
 def call_openai(model, text):
-    resp = openai_client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}],
-        temperature=0.7
-    )
-    return resp.choices[0].message.content.strip()
+    try:
+        resp = openai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": text}
+            ],
+            temperature=0.7
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        raise RuntimeError(f"OpenAI[{model}] error: {e}")
 
 def call_gemini(text):
-    resp = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([{"role": "user", "parts": [text]}])
+    resp = genai.GenerativeModel("models/gemini-1.5-flash").generate_content(
+        [{"role": "user", "parts": [text]}]
+    )
     return getattr(resp, "text", "").strip()
 
 def call_mistral(text):
@@ -89,7 +183,10 @@ def call_openrouter(text):
         },
         json={
             "model": "mistral",
-            "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}]
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": text}
+            ]
         },
         timeout=30
     )
@@ -107,21 +204,20 @@ if OPENAI_KEY:
     ALL_PROVIDERS["gpt-3.5-turbo"] = lambda t: call_openai("gpt-3.5-turbo", t)
     ALL_PROVIDERS["copilot"]       = call_copilot
 
-# FALLBACK + CACHE GLOBAL
+# 🔁 FALLBACK + CACHE + CONTADORES
 fallback_order = list(ALL_PROVIDERS.keys())
-_fallback_lock = threading.Lock()
 usage_counters = {p: 0 for p in fallback_order}
-DAILY_LIMITS = {"gemini": 50}
-CACHE = {}
+DAILY_LIMITS   = {"gemini": 50}  # Limite diário só para Gemini como exemplo
+CACHE          = {}
+_fallback_lock = threading.Lock()
 
 def within_limit(provider):
-    return usage_counters.get(provider, 0) < DAILY_LIMITS.get(provider, float("inf"))
+    return usage_counters[provider] < DAILY_LIMITS.get(provider, float("inf"))
 
 def gerar_resposta(text):
     global fallback_order
     with _fallback_lock:
         seq = fallback_order.copy()
-
     for prov in seq:
         if not within_limit(prov):
             continue
@@ -137,11 +233,36 @@ def gerar_resposta(text):
             return out
         except Exception as e:
             logging.warning(f"{prov} falhou: {e}")
-
     return "⚠️ Todas as IAs falharam."
 
-# MEMÓRIA GOOGLE DRIVE
-SCOPES = ['https://www.googleapis.com/auth/drive']
+def build_context(channel, msg):
+    mem = read_memory()
+    hist = [m for m in mem if m["origem"] == channel]
+    parts, size = [], 0
+    for h in reversed(hist):
+        snippet = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
+        if size + len(snippet) > MAX_CTX * 0.8:
+            break
+        parts.insert(0, snippet)
+        size += len(snippet)
+    parts.append(f"Usuário: {msg}")
+    ctx = SYSTEM_PROMPT + "\n" + "".join(parts)
+    return ctx[-MAX_CTX:] if len(ctx) > MAX_CTX else ctx
+
+def gerar_resposta_com_memoria(channel, msg):
+    resp = gerar_resposta(build_context(channel, msg))
+    if resp.startswith("⚠️"):
+        return resp
+    write_memory({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "origem": channel,
+        "entrada": msg,
+        "resposta": resp
+    })
+    return resp
+
+# 📁 GOOGLE DRIVE MEMÓRIA
+SCOPES   = ['https://www.googleapis.com/auth/drive']
 MEM_FILE = 'kaizen_memory_log.json'
 
 def drive_service():
@@ -185,104 +306,13 @@ def write_memory(entry):
         buf = io.BytesIO(json.dumps(mem, indent=2).encode())
         svc.files().update(fileId=fid, media_body=MediaIoBaseUpload(buf, 'application/json')).execute()
 
-def gerar_resposta_com_memoria(channel, msg):
-    resp = gerar_resposta(build_context(channel, msg))
-    if resp.startswith("⚠️"):
-        return resp
-    write_memory({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "origem": channel,
-        "entrada": msg,
-        "resposta": resp
-    })
-    return resp
-
-# UTILITÁRIOS E BUSCAS
-def fetch_url_content(url, max_chars=5000):
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        return r.text[:max_chars]
-    except Exception as e:
-        return f"❌ Erro ao buscar {url}: {e}"
-
-def search_mercadolivre_api(query, limit=3):
-    url = "https://api.mercadolibre.com/sites/MLB/search"
-    r = requests.get(url, params={"q": query, "limit": limit}, timeout=10)
-    r.raise_for_status()
-    return [{"site": "MercadoLivre", "title": i["title"], "price": f"R$ {i['price']:.2f}", "link": i["permalink"]} for i in r.json().get("results", [])[:limit]]
-
-def search_shopee_scrape(query, limit=3):
-    url = f"https://shopee.com.br/search?keyword={requests.utils.quote(query)}"
-    html = fetch_url_content(url, max_chars=200000)
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select("div._1gkBDw")[:limit]
-    out = []
-    for c in cards:
-        a = c.select_one("a._3NOHu2")
-        if not a:
-            continue
-        title = a.get_text(strip=True)
-        link = "https://shopee.com.br" + a["href"]
-        whole = c.select_one("span._29R_un")
-        dec = c.select_one("span._1qL5G9")
-        price = (whole.get_text() + (dec.get_text() if dec else "")).replace(",", ".")
-        out.append({"site": "Shopee", "title": title, "price": f"R$ {price}", "link": link})
-    return out
-
-def search_amazon_scrape(query, limit=3):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    url = f"https://www.amazon.com.br/s?k={requests.utils.quote(query)}"
-    html = fetch_url_content(url, max_chars=200000)
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select("div.s-result-item[data-component-type='s-search-result']")[:limit]
-    out = []
-    for c in cards:
-        t = c.select_one("span.a-size-medium.a-color-base.a-text-normal")
-        p = c.select_one("span.a-offscreen")
-        a = c.select_one("a.a-link-normal.a-text-normal, a.a-link-normal.s-no-outline")
-        if not (t and p and a):
-            continue
-        out.append({"site": "Amazon", "title": t.get_text(strip=True), "price": p.get_text(strip=True), "link": "https://www.amazon.com.br" + a["href"]})
-    return out
-
-def is_product_query(text):
-    return bool(re.search(r"\b(preciso|quero|comprar|valor|preço)\b", text.lower()))
-
-def extract_product_name(text):
-    patterns = [
-        r"preciso (?:do|da|de)\s+(.+)",
-        r"quero\s+comprar\s+(.+)",
-        r"quero\s+(.+)",
-        r"comprar\s+(.+)",
-        r"valor (?:de|do|da)\s+(.+)",
-        r"preço (?:de|do|da)\s+(.+)"
-    ]
-    tl = text.lower()
-    for pat in patterns:
-        m = re.search(pat, tl)
-        if m:
-            return m.group(1).strip()
-    return text
-
-def build_context(channel, msg):
-    mem = read_memory()
-    hist = [m for m in mem if m["origem"] == channel]
-    parts, size = [], 0
-    for h in reversed(hist):
-        snippet = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
-        if size + len(snippet) > MAX_CTX * 0.8:
-            break
-        parts.insert(0, snippet)
-        size += len(snippet)
-    parts.append(f"Usuário: {msg}")
-    ctx = SYSTEM_PROMPT + "\n" + "".join(parts)
-    return ctx[-MAX_CTX:] if len(ctx) > MAX_CTX else ctx
-
-# NOTIFICAÇÕES
+# 📩 NOTIFICAÇÕES
 def send_telegram(cid, txt):
     try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": cid, "text": txt})
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": cid, "text": txt}
+        )
         if not r.ok:
             logging.error(f"[telegram] {r.status_code}: {r.text}")
     except Exception:
@@ -290,7 +320,11 @@ def send_telegram(cid, txt):
 
 def send_whatsapp(msg):
     try:
-        twilio_client.messages.create(body=msg, from_=f"whatsapp:{TWILIO_FROM}", to=f"whatsapp:{TWILIO_TO}")
+        twilio_client.messages.create(
+            body=msg,
+            from_=f"whatsapp:{TWILIO_FROM}",
+            to=f"whatsapp:{TWILIO_TO}"
+        )
         logging.info("[whatsapp] enviado")
     except Exception as e:
         logging.error(f"[whatsapp] erro: {e}")
@@ -308,7 +342,7 @@ def send_email(subject, body):
     except Exception as e:
         logging.error(f"[email] erro: {e}")
 
-# LOOP AUTÔNOMO
+# 🔁 LOOPS AUTÔNOMOS
 def autonomous_loop():
     while True:
         try:
@@ -346,74 +380,64 @@ def diario_reflexivo():
     try:
         mem = read_memory()
         hoje = datetime.now(CLIENT_TZ).date()
-        today_entries = [m for m in mem if datetime.fromisoformat(m["timestamp"]).astimezone(CLIENT_TZ).date() == hoje]
+        today_entries = [
+            m for m in mem
+            if datetime.fromisoformat(m["timestamp"]).astimezone(CLIENT_TZ).date() == hoje
+        ]
         prompt = (
             "Você é o Kaizen. Com base nestas interações de hoje, gere uma reflexão "
-            "sobre padrões de resposta, pontos a melhorar e insights para o usuário:\n\n"
-            + "\n".join([f"- {m['entrada']}" for m in today_entries[-20:]])
+            "sobre padrões de resposta, pontos fortes e onde posso melhorar:\n\n"
+            + "\n".join(f"- {m['entrada']}" for m in today_entries)
         )
-        reflexao = gerar_resposta(prompt)
-        send_whatsapp(f"📝 Reflexão diária:\n{reflexao}")
-        send_telegram(TELEGRAM_CHAT_ID, f"📝 Reflexão diária:\n{reflexao}")
+        resp = gerar_resposta(prompt)
+        send_telegram(TELEGRAM_CHAT_ID, f"Reflexão diária:\n{resp}")
     except Exception:
-        logging.exception("[reflexao] falhou")
+        logging.exception("[reflexão] falhou")
 
-# TELEGRAM POLLING
-def process_telegram_message(chat_id, text):
-    if not text:
-        send_telegram(chat_id, "⚠️ Mensagem vazia.")
-        return
-    if text.lower().startswith(('/fetch ', '/buscar ')):
-        url = text.split(None, 1)[1]
-        content = fetch_url_content(url)
-        summary = gerar_resposta(f"Resuma este conteúdo da web:\n\n{content}")
-        send_telegram(chat_id, f"🔎 Conteúdo:\n{content[:500]}\n\n📝 Resumo:\n{summary}")
-        return
-    if text.lower().startswith('/cotacao ') or is_product_query(text):
-        produto = (
-            text.split(None, 1)[1]
-            if text.lower().startswith('/cotacao ')
-            else extract_product_name(text)
-        )
-        cot = []
-        cot += search_mercadolivre_api(produto)
-        cot += search_shopee_scrape(produto)
-        cot += search_amazon_scrape(produto)
-        msg = f"📊 Cotação para *{produto}*:\n\n"
-        for r in cot:
-            msg += f"[{r['site']}] {r['title']}\n{r['price']}\n{r['link']}\n\n"
-        send_telegram(chat_id, msg)
-        return
-    resp = gerar_resposta_com_memoria(f"tg:{chat_id}", text)
-    send_telegram(chat_id, resp)
-
-def polling_loop():
-    offset = None
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-            params = {"timeout": 60, "offset": offset}
-            res = requests.get(url, params=params, timeout=70).json()
-            for upd in res.get("result", []):
-                offset = upd["update_id"] + 1
-                msg = upd.get("message", {})
-                chat_id = msg.get("chat", {}).get("id")
-                text = msg.get("text", "").strip()
-                process_telegram_message(chat_id, text)
-        except Exception:
-            logging.exception("[telegram polling] erro")
-        time.sleep(1)
-
-def main():
-    threading.Thread(target=polling_loop, daemon=True).start()
-    threading.Thread(target=autonomous_loop, daemon=True).start()
-    threading.Thread(target=reset_daily_counters, daemon=True).start()
-    schedule.every(4).hours.do(heartbeat_job)
+def schedule_loop():
     schedule.every().day.at("18:00").do(diario_reflexivo)
-
+    schedule.every().hour.do(heartbeat_job)
     while True:
         schedule.run_pending()
         time.sleep(10)
 
+# ── ROTAS API ────────────────────────────────────────────────────────────────
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.json
+    msg = data.get("message", {}).get("text", "")
+    chat_id = data.get("message", {}).get("chat", {}).get("id")
+    if not msg or not chat_id:
+        return jsonify({"error": "invalid payload"}), 400
+    resp = gerar_resposta_com_memoria("telegram", msg)
+    send_telegram(chat_id, resp)
+    return jsonify({"status": "ok"})
+
+@app.route("/search", methods=["GET"])
+def search_api():
+    q = request.args.get("q", "")
+    if not q:
+        return jsonify({"error": "missing query"}), 400
+    if is_product_query(q):
+        product = extract_product_name(q)
+        ml = search_mercadolivre_api(product)
+        sp = search_shopee_scrape(product)
+        am = search_amazon_scrape(product)
+        results = ml + sp + am
+        return jsonify(results)
+    return jsonify({"msg": "query não reconhecida para busca de produto"})
+
+@app.route("/status", methods=["GET"])
+def status():
+    return jsonify({"status": "running", "time": datetime.now(CLIENT_TZ).isoformat()})
+
+# ── INÍCIO ────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
+    # Inicia loops autônomos em threads separadas
+    threading.Thread(target=autonomous_loop, daemon=True).start()
+    threading.Thread(target=reset_daily_counters, daemon=True).start()
+    threading.Thread(target=schedule_loop, daemon=True).start()
+    
+    # Roda servidor Flask
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
