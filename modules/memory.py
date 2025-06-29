@@ -6,10 +6,9 @@ CAMINHO_MEMORIA = "data/memoria.json"
 MEMORY_LOCK = Lock()
 
 def read_memory():
-    """Lê a memória do arquivo JSON."""
     if not os.path.exists(CAMINHO_MEMORIA):
         return []
-    
+
     with MEMORY_LOCK:
         try:
             with open(CAMINHO_MEMORIA, "r", encoding="utf-8") as f:
@@ -18,7 +17,6 @@ def read_memory():
             return []
 
 def write_memory(entry):
-    """Adiciona um novo item à memória e salva no disco."""
     with MEMORY_LOCK:
         memoria = read_memory()
         memoria.append(entry)
