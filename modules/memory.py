@@ -1,17 +1,26 @@
 import os
 import json
+from threading import Lock
 
 CAMINHO_MEMORIA = "data/memoria.json"
+MEMORY_LOCK = Lock()
 
 def read_memory():
+    """Lê a memória do arquivo JSON."""
     if not os.path.exists(CAMINHO_MEMORIA):
-        return {"conversas": [], "auto_aprendizado": ""}
-    with open(CAMINHO_MEMORIA, "r", encoding="utf-8") as f:
+        return []
+    
+    with MEMORY_LOCK:
         try:
-            return json.load(f)
+            with open(CAMINHO_MEMORIA, "r", encoding="utf-8") as f:
+                return json.load(f)
         except json.JSONDecodeError:
-            return {"conversas": [], "auto_aprendizado": ""}
+            return []
 
-def write_memory(memoria):
-    with open(CAMINHO_MEMORIA, "w", encoding="utf-8") as f:
-        json.dump(memoria, f, indent=2, ensure_ascii=False)
+def write_memory(entry):
+    """Adiciona um novo item à memória e salva no disco."""
+    with MEMORY_LOCK:
+        memoria = read_memory()
+        memoria.append(entry)
+        with open(CAMINHO_MEMORIA, "w", encoding="utf-8") as f:
+            json.dump(memoria, f, indent=2, ensure_ascii=False)
