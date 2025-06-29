@@ -1,54 +1,46 @@
 # core/main.py
+
 import os
-import sys
 import logging
-from modules.auto_learn import analisar_interacoes, carregar_aprendizado, salvar_aprendizado
-from modules.critic import CriticLLM
-from modules.memory import Memory
-from modules.notify import Notify
-from modules.planner import Planner
-from modules.telegram_bot import TelegramBot
-from modules.utils import setup_logging
+from modules.auto_learn import ciclo_de_aprendizado
+from modules.memory import carregar_memoria, salvar_memoria
+from modules.llm import gerar_resposta_com_memoria
+from modules.notify import send_whatsapp, send_telegram, send_email
+from modules.fetcher import fetch_url_content
+from datetime import datetime
+import time
 
-def main():
-    setup_logging()
-    logger = logging.getLogger("kaizen")
-    logger.info("Iniciando Kaizen...")
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
-    # Carrega memória persistente
-    memoria = Memory.load()
+def main_loop():
+    logging.info("Kaizen iniciado")
 
-    # Instancia os módulos principais
-    critic = CriticLLM()
-    notify = Notify()
-    planner = Planner()
-    telegram_bot = TelegramBot()
+    memoria = carregar_memoria()
 
-    # Inicia o bot do Telegram (rodar em thread separada dentro do TelegramBot)
-    telegram_bot.start()
+    while True:
+        # Simulação: recebe mensagem do usuário (substituir por input real ou API)
+        msg_usuario = input("Você: ").strip()
+        if msg_usuario.lower() in ("sair", "exit", "quit"):
+            logging.info("Encerrando Kaizen")
+            break
 
-    # Loop principal (exemplo simples, você ajusta o scheduler)
-    try:
-        while True:
-            # Exemplo de aprendizado automático baseado na memória atual
-            insights = analisar_interacoes(memoria.data)
-            if insights:
-                logger.info(f"Insights novos: {insights}")
-                aprendizado_atual = carregar_aprendizado()
-                aprendizado_atual.update(insights)
-                salvar_aprendizado(aprendizado_atual)
+        memoria.setdefault("historico", []).append({"conteudo": msg_usuario, "timestamp": datetime.now().isoformat()})
 
-            # Aqui podem vir chamadas ao CriticLLM, Planner, Notify, etc.
+        # Gera resposta com LLM
+        resposta = gerar_resposta_com_memoria("usuario", msg_usuario)
 
-            # Pequena pausa para não travar CPU
-            import time
-            time.sleep(10)
+        print(f"Kaizen: {resposta}")
 
-    except KeyboardInterrupt:
-        logger.info("Kaizen finalizado pelo usuário.")
-        telegram_bot.stop()
-        sys.exit(0)
+        # Atualiza aprendizado automático
+        ciclo_de_aprendizado(memoria)
+
+        # Salva memória
+        salvar_memoria(memoria)
+
+        # Opcional: notificações - exemplo envio por WhatsApp
+        send_whatsapp(f"Nova interação: {msg_usuario}\nResposta: {resposta}")
+
+        time.sleep(1)  # pausa para evitar sobrecarga
 
 if __name__ == "__main__":
-    main()
-
+    main_loop()
