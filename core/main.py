@@ -1,73 +1,77 @@
-# 🔥 main.py FINAL - VERSÃO HÍBRIDA (LEGADO + CORREÇÕES)
+# core/main.py
 
+import os
+import json
+import logging
 from flask import Flask, request, jsonify
+from dotenv import load_dotenv
 from modules.llm import gerar_resposta_com_memoria
+from modules.notify import send_telegram, send_whatsapp, send_email
 from modules.fetcher import fetch_url_content
-from modules.utils import is_product_query, extract_product_name
+from modules.memory import read_memory
+from modules.scheduler import iniciar_agendamentos
+from modules.planner import definir_objetivos, gerar_acoes, executar_acao
+from modules.auto_learn import ciclo_de_aprendizado
 from modules.critic import analisar_resposta
-from modules.planner import definir_objetivos, gerar_acoes, executar_acao, avaliar_resultado
-from modules.memory import carregar_memoria, salvar_memoria
-from modules.notify import send_telegram
+from zoneinfo import ZoneInfo
 from datetime import datetime
-import traceback
+
+load_dotenv()
+
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CLIENT_TZ = ZoneInfo("America/Sao_Paulo")
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-@app.route("/ask", methods=["POST"])
+@app.route('/', methods=['GET'])
+def index():
+    return "Kaizen rodando.", 200
+
+@app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json(force=True)
     msg = data.get("message", "").strip()
     if not msg:
         return jsonify(error="mensagem vazia"), 400
 
-    try:
-        # 🔎 Coleta de conteúdo externo
-        if msg.lower().startswith(('/fetch ', '/buscar ')):
-            url = msg.split(None, 1)[1]
-            content = fetch_url_content(url)
-            resumo = gerar_resposta_com_memoria("web", f"Resuma este conteúdo:
-\n{content}")
-            return jsonify(raw=content, summary=resumo)
+    if msg.lower().startswith(('/fetch ', '/buscar ')):
+        url = msg.split(None, 1)[1]
+        content = fetch_url_content(url)
+        resumo = gerar_resposta_com_memoria("web", f"Resuma este conteúdo:\n\n{content}")
+        return jsonify(raw=content[:1000], summary=resumo)
 
-        # 📊 Cotação de produtos
-        if msg.lower().startswith('/cotacao ') or is_product_query(msg):
-            produto = (
-                msg.split(None, 1)[1]
-                if msg.lower().startswith('/cotacao ')
-                else extract_product_name(msg)
-            )
-            from modules.fetcher import search_mercadolivre_api, search_shopee_scrape, search_amazon_scrape
-            cot = []
-            cot += search_mercadolivre_api(produto)
-            cot += search_shopee_scrape(produto)
-            cot += search_amazon_scrape(produto)
-            return jsonify(cotacao=cot)
+    resposta = gerar_resposta_com_memoria("web", msg)
+    return jsonify(reply=resposta)
 
-        # 🧠 Gera resposta com memória
-        resposta = gerar_resposta_com_memoria("web", msg)
+@app.route('/refletir', methods=['POST'])
+def refletir():
+    memoria = read_memory()
+    ciclo_de_aprendizado(memoria)
+    return jsonify(status="ok", mensagem="Reflexão e aprendizado executados.")
 
-        # 🔍 Autocrítica da resposta
-        feedback = analisar_resposta(msg, resposta)
+@app.route('/objetivos', methods=['GET'])
+def objetivos():
+    lista = definir_objetivos()
+    return jsonify(objetivos=lista)
 
-        # 🧠 Autoaprendizado
-        memoria = carregar_memoria()
-        memoria["conversas"].append({"entrada": msg, "resposta": resposta})
-        salvar_memoria(memoria)
+@app.route('/executar', methods=['POST'])
+def executar():
+    data = request.get_json(force=True)
+    objetivo = data.get("objetivo", "")
+    acoes = gerar_acoes(objetivo)
+    for acao in acoes:
+        executar_acao(acao)
+    return jsonify(status="ok", acoes=acoes)
 
-        # 🔄 Autoexecução de planejamento
-        objetivos = definir_objetivos()
-        for obj in objetivos:
-            acoes = gerar_acoes(obj)
-            for acao in acoes:
-                executar_acao(acao)
-        avaliacao = avaliar_resultado()
-
-        return jsonify(reply=resposta, feedback=feedback, autoeval=avaliacao)
-
-    except Exception as e:
-        traceback.print_exc()
-        send_telegram("2025804227", f"❌ Erro no /ask: {e}")
-        return jsonify(error=str(e)), 500
+@app.route('/test', methods=['GET'])
+def test():
+    agora = datetime.now(CLIENT_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    send_telegram(TELEGRAM_CHAT_ID, f"Heartbeat de teste: {agora}")
+    send_whatsapp(f"[Kaizen Test] {agora}")
+    send_email("Kaizen Test", f"Teste de notificacao em {agora}")
+    return jsonify(ok=True, mensagem="Notificações enviadas")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    iniciar_agendamentos()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
