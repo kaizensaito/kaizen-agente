@@ -1,36 +1,54 @@
-from modules.auto_learn import AutoLearn
+# core/main.py
+import os
+import sys
+import logging
+from modules.auto_learn import analisar_interacoes, carregar_aprendizado, salvar_aprendizado
 from modules.critic import CriticLLM
 from modules.memory import Memory
 from modules.notify import Notify
 from modules.planner import Planner
 from modules.telegram_bot import TelegramBot
-from modules.utils import Utils
-from flask import Flask
-
-app = Flask(__name__)
-
-# Instancia os módulos
-memory = Memory()
-auto_learn = AutoLearn(memory)
-critic = CriticLLM(memory)
-planner = Planner(memory)
-notify = Notify()
-telegram_bot = TelegramBot(token="7968219889:AAE0QsMpWwkVtHAY9mdsCp35vU3hqkmukOQ", chat_id="2025804227")
-
-# Endpoint simples para healthcheck
-@app.route('/health')
-def healthcheck():
-    return "Kaizen Agent Online", 200
+from modules.utils import setup_logging
 
 def main():
-    # Aqui você pode colocar inicializações adicionais, se precisar
-    print("Kaizen agente ativo!")
+    setup_logging()
+    logger = logging.getLogger("kaizen")
+    logger.info("Iniciando Kaizen...")
 
-    # Starta o bot Telegram (assumindo que ele tenha um método .start() que roda em thread)
+    # Carrega memória persistente
+    memoria = Memory.load()
+
+    # Instancia os módulos principais
+    critic = CriticLLM()
+    notify = Notify()
+    planner = Planner()
+    telegram_bot = TelegramBot()
+
+    # Inicia o bot do Telegram (rodar em thread separada dentro do TelegramBot)
     telegram_bot.start()
 
-    # Rodar Flask na porta 10000 e todas interfaces
-    app.run(host='0.0.0.0', port=10000)
+    # Loop principal (exemplo simples, você ajusta o scheduler)
+    try:
+        while True:
+            # Exemplo de aprendizado automático baseado na memória atual
+            insights = analisar_interacoes(memoria.data)
+            if insights:
+                logger.info(f"Insights novos: {insights}")
+                aprendizado_atual = carregar_aprendizado()
+                aprendizado_atual.update(insights)
+                salvar_aprendizado(aprendizado_atual)
+
+            # Aqui podem vir chamadas ao CriticLLM, Planner, Notify, etc.
+
+            # Pequena pausa para não travar CPU
+            import time
+            time.sleep(10)
+
+    except KeyboardInterrupt:
+        logger.info("Kaizen finalizado pelo usuário.")
+        telegram_bot.stop()
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
+
