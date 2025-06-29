@@ -3,16 +3,15 @@ import json
 
 CAMINHO_MEMORIA = "data/memoria.json"
 
-def carregar_memoria():
+def read_memory():
     if not os.path.exists(CAMINHO_MEMORIA):
-        return {"historico": [], "auto_aprendizado": ""}
-    
+        return {"conversas": [], "auto_aprendizado": ""}
     with open(CAMINHO_MEMORIA, "r", encoding="utf-8") as f:
         try:
             return json.load(f)
         except json.JSONDecodeError:
-            return {"historico": [], "auto_aprendizado": ""}
+            return {"conversas": [], "auto_aprendizado": ""}
 
-def salvar_memoria(memoria):
+def write_memory(memoria):
     with open(CAMINHO_MEMORIA, "w", encoding="utf-8") as f:
         json.dump(memoria, f, indent=2, ensure_ascii=False)
