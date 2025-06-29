@@ -1,46 +1,46 @@
 # core/main.py
-
 import os
-import logging
 from modules.auto_learn import ciclo_de_aprendizado
+from modules.critic import CriticLLM
+from modules.planner import definir_objetivos, gerar_acoes, executar_acao, avaliar_resultado
 from modules.memory import carregar_memoria, salvar_memoria
-from modules.llm import gerar_resposta_com_memoria
 from modules.notify import send_whatsapp, send_telegram, send_email
 from modules.fetcher import fetch_url_content
-from datetime import datetime
-import time
+from modules.llm import gerar_resposta_com_memoria
 
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+def main():
+    print("[Kaizen] Iniciando agente...")
 
-def main_loop():
-    logging.info("Kaizen iniciado")
-
+    # Carrega memória
     memoria = carregar_memoria()
 
-    while True:
-        # Simulação: recebe mensagem do usuário (substituir por input real ou API)
-        msg_usuario = input("Você: ").strip()
-        if msg_usuario.lower() in ("sair", "exit", "quit"):
-            logging.info("Encerrando Kaizen")
-            break
+    # Simula mensagem recebida (exemplo)
+    mensagem = "Olá Kaizen, status do sistema?"
 
-        memoria.setdefault("historico", []).append({"conteudo": msg_usuario, "timestamp": datetime.now().isoformat()})
+    # Gera resposta com memória
+    resposta = gerar_resposta_com_memoria("usuario_01", mensagem)
+    print(f"Resposta gerada: {resposta}")
 
-        # Gera resposta com LLM
-        resposta = gerar_resposta_com_memoria("usuario", msg_usuario)
+    # Atualiza memória com a interação
+    memoria.setdefault("historico", []).append({"conteudo": mensagem})
+    salvar_memoria(memoria)
 
-        print(f"Kaizen: {resposta}")
+    # Executa ciclo de autoaprendizado
+    ciclo_de_aprendizado(memoria)
 
-        # Atualiza aprendizado automático
-        ciclo_de_aprendizado(memoria)
+    # Planejamento e execução de ações simples
+    objetivos = definir_objetivos()
+    for objetivo in objetivos:
+        acoes = gerar_acoes(objetivo)
+        for acao in acoes:
+            executar_acao(acao)
+    resultado = avaliar_resultado()
+    print(f"Resultado avaliação: {resultado}")
 
-        # Salva memória
-        salvar_memoria(memoria)
-
-        # Opcional: notificações - exemplo envio por WhatsApp
-        send_whatsapp(f"Nova interação: {msg_usuario}\nResposta: {resposta}")
-
-        time.sleep(1)  # pausa para evitar sobrecarga
+    # Envia heartbeat por notificações
+    send_whatsapp("[Kaizen] Heartbeat OK")
+    send_telegram(os.getenv("TELEGRAM_CHAT_ID"), "[Kaizen] Heartbeat OK")
+    send_email("Kaizen Heartbeat", "Sistema funcionando normalmente.")
 
 if __name__ == "__main__":
-    main_loop()
+    main()
