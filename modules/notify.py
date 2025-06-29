@@ -1,10 +1,10 @@
+import os
 import logging
 import requests
 from twilio.rest import Client
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import os
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
@@ -42,7 +42,8 @@ def send_whatsapp(msg):
 def send_email(subject, body):
     try:
         msg = MIMEMultipart()
-        msg['From'] = msg['To'] = GMAIL_USER
+        msg['From'] = GMAIL_USER
+        msg['To'] = GMAIL_USER
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
@@ -51,26 +52,3 @@ def send_email(subject, body):
         logging.info("[email] enviado")
     except Exception as e:
         logging.error(f"[email] erro: {e}")
-
-def heartbeat_job():
-    from modules.llm import ALL_PROVIDERS
-    from modules.notify import send_whatsapp, send_telegram, send_email
-    from datetime import datetime
-    import logging
-
-    logging.info("[heartbeat] executando")
-    report = []
-    for name in ALL_PROVIDERS:
-        ok = True
-        try:
-            ALL_PROVIDERS[name]("Teste Kaizen")
-        except:
-            ok = False
-        report.append(f"{name}: {'OK' if ok else 'ERRO'}")
-    texto = (
-        f"Heartbeat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        + "\n".join(report)
-    )
-    send_whatsapp(texto)
-    send_telegram(TELEGRAM_CHAT_ID, texto)
-    send_email("Kaizen Heartbeat", texto)
