@@ -37,7 +37,10 @@ def fetch_url_content(url, max_chars=5000):
 # ── BUSCAS DE PRODUTO ───────────────────────────────────────────────────────────
 def search_mercadolivre_api(query, limit=3):
     url = "https://api.mercadolibre.com/sites/MLB/search"
-    r = requests.get(url, params={"q": query, "limit": limit}, timeout=10)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; KaizenBot/1.0; +https://kaizen)"
+    }
+    r = requests.get(url, params={"q": query, "limit": limit}, headers=headers, timeout=10)
     logging.info(f"[ML] Status: {r.status_code}")
     logging.info(f"[ML] URL chamada: {r.url}")
     logging.info(f"[ML] JSON: {json.dumps(r.json(), indent=2)[:1000]}")
