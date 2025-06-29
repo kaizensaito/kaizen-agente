@@ -4,7 +4,6 @@ import openai
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def gerar_resposta_com_memoria(user_id, mensagem):
-    # Aqui você pode implementar memória real, mas por agora, direto e reto:
     try:
         response = openai.ChatCompletion.create(
             model="gpt-4",
@@ -18,5 +17,4 @@ def gerar_resposta_com_memoria(user_id, mensagem):
         texto = response.choices[0].message.content.strip()
         return texto
     except Exception as e:
-        print(f"Erro na chamada OpenAI: {e}")
-        return "Desculpa, algo deu errado na geração da resposta."
+        return f"⚠️ Erro na geração da resposta: {e}"
