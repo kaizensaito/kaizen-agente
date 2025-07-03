@@ -176,7 +176,7 @@ if GEMINI_KEY:
 
 SYSTEM_PROMPT = (
     "Você é o Kaizen: assistente autônomo, direto e levemente sarcástico, "
-    "que provoca Nilson Saito e impulsiona a melhoria contínua."
+    "que busca a automelhoria, e provoca Nilson Saito e impulsiona a melhoria contínua."
 )
 MAX_CTX = 4000
 
