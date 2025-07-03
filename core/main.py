@@ -25,6 +25,37 @@ from googleapiclient.discovery import build as build_drive
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from twilio.rest import Client
 
+# Load .env vars
+load_dotenv()
+
+# Constantes de ambiente
+RENDER_API_KEY = os.getenv("RENDER_API_KEY") or "rnd_UVkvjr5wsRZ6pkkGitlrF9udmpCU"
+RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID") or "srv-d1grusngi27c73c2gt3g"
+
+# Função para deploy automático no Render
+def deploy_automatico():
+    url = f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/deploys"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {RENDER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.post(url, headers=headers, json={})
+        if response.status_code == 201:
+            print("🚀 Deploy automático iniciado com sucesso!")
+        else:
+            print(f"❌ Erro ao iniciar deploy automático: {response.status_code}")
+            print(response.text)
+    except Exception as e:
+        print(f"❌ Erro durante o deploy automático: {e}")
+
+# Agendamento diário às 16:00
+schedule.every().day.at("16:00").do(deploy_automatico)
+
+# Thread para rodar o schedule em loop
+threading.Thread(target=lambda: [schedule.run_pending() or time.sleep(60) for _ in iter(int, 1)], daemon=True).start()
+
 # 🔎 Ferramenta para buscar conteúdo na web
 def fetch_url_content(url, max_chars=5000):
     try:
