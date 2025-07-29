@@ -15,6 +15,9 @@ from dotenv import load_dotenv
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from bs4 import BeautifulSoup
+load_dotenv()
+app = Flask(__name__)
+
 
 import google.generativeai as genai
 from openai import OpenAI
