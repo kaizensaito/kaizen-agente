@@ -23,25 +23,16 @@ from googleapiclient.discovery import build as build_drive
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from twilio.rest import Client
 
-# Load environment variables
 load_dotenv()
 
-# Timezone config
-CLIENT_TZ = ZoneInfo("America/Sao_Paulo")
-
-# Logging config
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-# Flask app
-app = Flask(__name__)
-
-# Constants from env
+# Configurações gerais
 RENDER_API_KEY = os.getenv("RENDER_API_KEY")
 RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY_MAIN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 HF_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
 OR_KEY = os.getenv("OPENROUTER_API_KEY")
+GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -51,22 +42,28 @@ TWILIO_TO = os.getenv("TWILIO_TO_NUMBER")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 
-# Twilio client
+CLIENT_TZ = ZoneInfo("America/Sao_Paulo")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# Initialize LLM clients
+# Configura Google creds
+GOOGLE_CREDS = json.loads(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else None
+
+# Instancia OpenAI
 openai_client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+
+# Configura Gemini
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
 
-# System prompt base
 SYSTEM_PROMPT = (
     "Você é o Kaizen: assistente autônomo, direto e levemente sarcástico, "
-    "que busca a automelhoria e provoca Nilson Saito para melhoria contínua."
+    "que busca a automelhoria, e provoca Nilson Saito e impulsiona a melhoria contínua."
 )
-
 MAX_CTX = 4000
-# --------- Funções de chamada das IAs ---------
+
 def call_openai(model, text):
     try:
         resp = openai_client.chat.completions.create(
@@ -120,24 +117,19 @@ def call_openrouter(text):
 def call_copilot(text):
     return call_openai("gpt-4o", text)
 
-# --------- Fallback multi-provedor ---------
 ALL_PROVIDERS = {}
-if GEMINI_KEY:
-    ALL_PROVIDERS["gemini"] = call_gemini
-if HF_TOKEN:
-    ALL_PROVIDERS["mistral"] = call_mistral
-if OR_KEY:
-    ALL_PROVIDERS["openrouter"] = call_openrouter
+if GEMINI_KEY: ALL_PROVIDERS["gemini"] = call_gemini
+if HF_TOKEN: ALL_PROVIDERS["mistral"] = call_mistral
+if OR_KEY: ALL_PROVIDERS["openrouter"] = call_openrouter
 if OPENAI_KEY:
     ALL_PROVIDERS["gpt-3.5-turbo"] = lambda t: call_openai("gpt-3.5-turbo", t)
     ALL_PROVIDERS["copilot"] = call_copilot
 
 fallback_order = list(ALL_PROVIDERS.keys())
 usage_counters = {p: 0 for p in fallback_order}
-DAILY_LIMITS = {"gemini": 50}  # Exemplo de limite diário
-
+DAILY_LIMITS = {"gemini": 50}
+CACHE = {}
 _fallback_lock = threading.Lock()
-
 def within_limit(provider):
     return usage_counters[provider] < DAILY_LIMITS.get(provider, float("inf"))
 
@@ -149,64 +141,18 @@ def gerar_resposta(text):
         if not within_limit(prov):
             continue
         try:
-            out = ALL_PROVIDERS[prov](text)
+            logging.info(f"[fallback] tentando {prov}")
+            out = CACHE.setdefault((prov, text), ALL_PROVIDERS[prov](text))
             if not out.strip():
-                raise RuntimeError(f"{prov} returned empty")
+                raise RuntimeError(f"{prov} retornou vazio")
             usage_counters[prov] += 1
             with _fallback_lock:
                 fallback_order.remove(prov)
                 fallback_order.insert(0, prov)
             return out
         except Exception as e:
-            logging.warning(f"{prov} failed: {e}")
+            logging.warning(f"{prov} falhou: {e}")
     return "⚠️ Todas as IAs falharam."
-
-# --------- Memória no Google Drive ---------
-SCOPES = ['https://www.googleapis.com/auth/drive']
-MEM_FILE = 'kaizen_memory_log.json'
-
-def drive_service():
-    creds = service_account.Credentials.from_service_account_info(GOOGLE_CREDS, scopes=SCOPES)
-    return build_drive('drive', 'v3', credentials=creds, cache_discovery=False)
-
-def get_file_id(svc):
-    res = svc.files().list(
-        q=f"name='{MEM_FILE}' and trashed=false",
-        spaces='drive',
-        fields='files(id,name)',
-        pageSize=1
-    ).execute()
-    files = res.get('files', [])
-    return files[0]['id'] if files else None
-
-def read_memory():
-    svc = drive_service()
-    fid = get_file_id(svc)
-    if not fid:
-        meta = {"name": MEM_FILE}
-        media = MediaIoBaseUpload(io.BytesIO(b"[]"), mimetype="application/json")
-        svc.files().create(body=meta, media_body=media, fields="id").execute()
-        return []
-    buf = io.BytesIO()
-    dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=fid))
-    while True:
-        done = dl.next_chunk()[1]
-        if done:
-            break
-    buf.seek(0)
-    return json.load(buf)
-
-def write_memory(entry):
-    with threading.Lock():
-        svc = drive_service()
-        fid = get_file_id(svc)
-        mem = read_memory()
-        mem.append(entry)
-        buf = io.BytesIO(json.dumps(mem, indent=2).encode())
-        svc.files().update(fileId=fid, media_body=MediaIoBaseUpload(buf, 'application/json')).execute()
-
-# --------- Contexto e geração com memória ---------
-MAX_CTX = 4000
 
 def build_context(channel, msg):
     mem = read_memory()
@@ -233,89 +179,147 @@ def gerar_resposta_com_memoria(channel, msg):
         "resposta": resp
     })
     return resp
-# --------- BUSCAS DE PRODUTOS ---------
-def fetch_url_content(url, max_chars=5000):
+
+# GOOGLE DRIVE MEMÓRIA
+SCOPES = ['https://www.googleapis.com/auth/drive']
+MEM_FILE = 'kaizen_memory_log.json'
+
+def drive_service():
+    creds = service_account.Credentials.from_service_account_info(GOOGLE_CREDS, scopes=SCOPES)
+    return build_drive('drive', 'v3', credentials=creds, cache_discovery=False)
+
+def get_file_id(svc):
+    res = svc.files().list(
+        q=f"name='{MEM_FILE}' and trashed=false",
+        spaces='drive',
+        fields='files(id,name)',
+        pageSize=1
+    ).execute()
+    files = res.get('files', [])
+    return files[0]['id'] if files else None
+
+def read_memory():
+    svc = drive_service()
+    fid = get_file_id(svc)
+    if not fid:
+        logging.warning(f"[drive] '{MEM_FILE}' não encontrado — criando novo")
+        meta = {"name": MEM_FILE}
+        media = MediaIoBaseUpload(io.BytesIO(b"[]"), mimetype="application/json")
+        svc.files().create(body=meta, media_body=media, fields="id").execute()
+        return []
+    buf = io.BytesIO()
+    dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=fid))
+    while True:
+        done = dl.next_chunk()[1]
+        if done:
+            break
+    buf.seek(0)
+    return json.load(buf)
+
+def write_memory(entry):
+    with threading.Lock():
+        svc = drive_service()
+        fid = get_file_id(svc)
+        mem = read_memory()
+        mem.append(entry)
+        buf = io.BytesIO(json.dumps(mem, indent=2).encode())
+        svc.files().update(fileId=fid, media_body=MediaIoBaseUpload(buf, 'application/json')).execute()
+# 📩 NOTIFICAÇÕES
+def send_telegram(cid, txt):
     try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        return r.text[:max_chars]
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": cid, "text": txt}
+        )
+        if not r.ok:
+            logging.error(f"[telegram] {r.status_code}: {r.text}")
+    except Exception:
+        logging.exception("[telegram] erro")
+
+def send_whatsapp(msg):
+    try:
+        twilio_client.messages.create(
+            body=msg,
+            from_=f"whatsapp:{TWILIO_FROM}",
+            to=f"whatsapp:{TWILIO_TO}"
+        )
+        logging.info("[whatsapp] enviado")
     except Exception as e:
-        return f"❌ Erro ao buscar {url}: {e}"
+        logging.error(f"[whatsapp] erro: {e}")
 
-def search_mercadolivre_api(query, limit=3):
-    url = "https://api.mercadolibre.com/sites/MLB/search"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, params={"q": query, "limit": limit}, headers=headers, timeout=10)
-    r.raise_for_status()
-    return [
-        {
-            "site": "MercadoLivre",
-            "title": item["title"],
-            "price": f"R$ {item['price']:.2f}",
-            "link": item["permalink"]
-        }
-        for item in r.json().get("results", [])[:limit]
-    ]
+def send_email(subject, body):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = GMAIL_USER
+        msg['To'] = GMAIL_USER
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(GMAIL_USER, GMAIL_PASS)
+            server.send_message(msg)
+        logging.info("[email] enviado")
+    except Exception as e:
+        logging.error(f"[email] erro: {e}")
 
-def search_shopee_scrape(query, limit=3):
-    url = f"https://shopee.com.br/search?keyword={requests.utils.quote(query)}"
-    html = fetch_url_content(url, max_chars=200000)
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select("div._1gkBDw")[:limit]
-    out = []
-    for c in cards:
-        a = c.select_one("a._3NOHu2")
-        if not a:
-            continue
-        title = a.get_text(strip=True)
-        link = "https://shopee.com.br" + a["href"]
-        whole = c.select_one("span._29R_un")
-        dec = c.select_one("span._1qL5G9")
-        price = (whole.get_text() + (dec.get_text() if dec else "")).replace(",", ".")
-        out.append({"site": "Shopee", "title": title, "price": f"R$ {price}", "link": link})
-    return out
+# 🔁 LOOPS AUTÔNOMOS
+def autonomous_loop():
+    while True:
+        try:
+            insight = gerar_resposta_com_memoria("saito", "Gere um insight produtivo.")
+            send_telegram(TELEGRAM_CHAT_ID, insight)
+        except Exception:
+            logging.exception("[auto] falhou")
+        time.sleep(4 * 3600)
 
-def search_amazon_scrape(query, limit=3):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    url = f"https://www.amazon.com.br/s?k={requests.utils.quote(query)}"
-    html = fetch_url_content(url, max_chars=200000)
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select("div.s-result-item[data-component-type='s-search-result']")[:limit]
-    out = []
-    for c in cards:
-        t = c.select_one("span.a-size-medium.a-color-base.a-text-normal")
-        p = c.select_one("span.a-offscreen")
-        a = c.select_one("a.a-link-normal.a-text-normal, a.a-link-normal.s-no-outline")
-        if not (t and p and a):
-            continue
-        out.append({
-            "site": "Amazon",
-            "title": t.get_text(strip=True),
-            "price": p.get_text(strip=True),
-            "link": "https://www.amazon.com.br" + a["href"]
-        })
-    return out
+def reset_daily_counters():
+    while True:
+        now = datetime.now(timezone.utc)
+        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time.sleep((nxt - now).total_seconds())
+        for k in usage_counters:
+            usage_counters[k] = 0
+        logging.info("[quota] resetada")
 
-def is_product_query(text):
-    return bool(re.search(r"\b(preciso|quero|comprar|valor|preço)\b", text.lower()))
+def heartbeat_job():
+    logging.info("[heartbeat] executando")
+    report = []
+    for name, fn in ALL_PROVIDERS.items():
+        ok = True
+        try:
+            fn("Teste Kaizen")
+        except:
+            ok = False
+        report.append(f"{name}: {'OK' if ok else 'ERRO'}")
+    text = f"Heartbeat {datetime.now(CLIENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(report)
+    send_whatsapp(text)
+    send_telegram(TELEGRAM_CHAT_ID, text)
+    send_email("Kaizen Heartbeat", text)
 
-def extract_product_name(text):
-    patterns = [
-        r"preciso (?:do|da|de)\s+(.+)",
-        r"quero\s+comprar\s+(.+)",
-        r"quero\s+(.+)",
-        r"comprar\s+(.+)",
-        r"valor (?:de|do|da)\s+(.+)",
-        r"preço (?:de|do|da)\s+(.+)"
-    ]
-    tl = text.lower()
-    for pat in patterns:
-        m = re.search(pat, tl)
-        if m:
-            return m.group(1).strip()
-    return text
+def diario_reflexivo():
+    try:
+        mem = read_memory()
+        hoje = datetime.now(CLIENT_TZ).date()
+        today_entries = [
+            m for m in mem
+            if datetime.fromisoformat(m["timestamp"]).astimezone(CLIENT_TZ).date() == hoje
+        ]
+        prompt = (
+            "Você é o Kaizen. Com base nestas interações de hoje, gere uma reflexão "
+            "sobre padrões de resposta, pontos fortes e onde posso melhorar:\n\n"
+            + "\n".join(f"- {m['entrada']}" for m in today_entries)
+        )
+        resp = gerar_resposta(prompt)
+        send_telegram(TELEGRAM_CHAT_ID, f"Reflexão diária:\n{resp}")
+    except Exception:
+        logging.exception("[reflexão] falhou")
 
-# --------- ROTAS API ---------
+def schedule_loop():
+    schedule.every().day.at("18:00").do(diario_reflexivo)
+    schedule.every().hour.do(heartbeat_job)
+    while True:
+        schedule.run_pending()
+        time.sleep(10)
+# ── ROTAS API ────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -345,125 +349,13 @@ def search_api():
 def status():
     return jsonify({"status": "running", "time": datetime.now(CLIENT_TZ).isoformat()})
 
-# --------- HEARTBEAT ---------
-def heartbeat_job():
-    logging.info("[heartbeat] executando")
-    report = []
-    for name, fn in ALL_PROVIDERS.items():
-        ok = True
-        try:
-            fn("Teste Kaizen")
-        except:
-            ok = False
-        report.append(f"{name}: {'OK' if ok else 'ERRO'}")
-    text = f"Heartbeat {datetime.now(CLIENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(report)
-    send_whatsapp(text)
-    send_telegram(TELEGRAM_CHAT_ID, text)
-    send_email("Kaizen Heartbeat", text)
-# --------- Funções de envio (Email, WhatsApp, Telegram) ---------
-def send_email(subject, body):
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = GMAIL_USER
-        msg['To'] = GMAIL_USER
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(GMAIL_USER, GMAIL_PASS)
-            server.send_message(msg)
-        logging.info("[email] enviado")
-    except Exception as e:
-        logging.error(f"[email] erro: {e}")
+# ── INÍCIO ────────────────────────────────────────────────────────────────
 
-def send_whatsapp(msg):
-    try:
-        twilio_client.messages.create(
-            body=msg,
-            from_=f"whatsapp:{TWILIO_FROM}",
-            to=f"whatsapp:{TWILIO_TO}"
-        )
-        logging.info("[whatsapp] enviado")
-    except Exception as e:
-        logging.error(f"[whatsapp] erro: {e}")
-
-def send_telegram(chat_id, txt):
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": txt}
-        )
-        if not r.ok:
-            logging.error(f"[telegram] {r.status_code}: {r.text}")
-    except Exception as e:
-        logging.error(f"[telegram] erro: {e}")
-
-# --------- Deploy automático no Render às 16:00 ---------
-def deploy_automatico():
-    url = f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/deploys"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {RENDER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    try:
-        response = requests.post(url, headers=headers, json={})
-        if response.status_code == 201:
-            logging.info("🚀 Deploy automático iniciado com sucesso!")
-        else:
-            logging.error(f"❌ Erro ao iniciar deploy automático: {response.status_code} - {response.text}")
-    except Exception as e:
-        logging.error(f"❌ Erro durante o deploy automático: {e}")
-
-schedule.every().day.at("16:00").do(deploy_automatico)
-
-# --------- Loops autônomos ---------
-def autonomous_loop():
-    while True:
-        try:
-            insight = gerar_resposta_com_memoria("saito", "Gere um insight produtivo.")
-            send_telegram(TELEGRAM_CHAT_ID, insight)
-        except Exception:
-            logging.exception("[auto] falhou")
-        time.sleep(4 * 3600)  # 4 horas
-
-def reset_daily_counters():
-    while True:
-        now = datetime.now(timezone.utc)
-        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        time.sleep((nxt - now).total_seconds())
-        for k in usage_counters:
-            usage_counters[k] = 0
-        logging.info("[quota] resetada")
-
-def diario_reflexivo():
-    try:
-        mem = read_memory()
-        hoje = datetime.now(CLIENT_TZ).date()
-        today_entries = [
-            m for m in mem
-            if datetime.fromisoformat(m["timestamp"]).astimezone(CLIENT_TZ).date() == hoje
-        ]
-        prompt = (
-            "Você é o Kaizen. Com base nestas interações de hoje, gere uma reflexão "
-            "sobre padrões de resposta, pontos fortes e onde posso melhorar:\n\n"
-            + "\n".join(f"- {m['entrada']}" for m in today_entries)
-        )
-        resp = gerar_resposta(prompt)
-        send_telegram(TELEGRAM_CHAT_ID, f"Reflexão diária:\n{resp}")
-    except Exception:
-        logging.exception("[reflexão] falhou")
-
-def schedule_loop():
-    schedule.every().day.at("18:00").do(diario_reflexivo)
-    schedule.every().hour.do(heartbeat_job)
-    while True:
-        schedule.run_pending()
-        time.sleep(10)
 if __name__ == "__main__":
-    # Inicia threads dos loops autônomos
+    # Inicia loops autônomos em threads separadas
     threading.Thread(target=autonomous_loop, daemon=True).start()
     threading.Thread(target=reset_daily_counters, daemon=True).start()
     threading.Thread(target=schedule_loop, daemon=True).start()
-
+    
     # Roda servidor Flask
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
