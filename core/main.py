@@ -15,350 +15,342 @@ from dotenv import load_dotenv
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from bs4 import BeautifulSoup
-load_dotenv()
-app = Flask(__name__)
-
-
 import google.generativeai as genai
-from openai import OpenAI
-from google.oauth2 import service_account
-from googleapiclient.discovery import build as build_drive
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-from twilio.rest import Client
 
+# Configuração básica de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+# Carregando variáveis de ambiente
 load_dotenv()
 
-# Configurações gerais
-RENDER_API_KEY = os.getenv("RENDER_API_KEY")
-RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY_MAIN")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-HF_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
-OR_KEY = os.getenv("OPENROUTER_API_KEY")
-GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM = os.getenv("TWILIO_FROM_NUMBER")
-TWILIO_TO = os.getenv("TWILIO_TO_NUMBER")
-GMAIL_USER = os.getenv("GMAIL_USER")
-GMAIL_PASS = os.getenv("GMAIL_PASS")
-
+# Constantes e variáveis globais
 CLIENT_TZ = ZoneInfo("America/Sao_Paulo")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+EMAIL_DESTINO = os.getenv("EMAIL_DESTINO")
+EMAIL_ORIGEM = os.getenv("EMAIL_ORIGEM")
+EMAIL_SENHA = os.getenv("EMAIL_SENHA")
 
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+FROM_WPP = os.getenv("FROM_WPP")
+TO_WPP = os.getenv("TO_WPP")
 
-# Configura Google creds
-GOOGLE_CREDS = json.loads(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else None
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Instancia OpenAI
-openai_client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-# Configura Gemini
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
+HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
 
-SYSTEM_PROMPT = (
-    "Você é o Kaizen: assistente autônomo, direto e levemente sarcástico, "
-    "que busca a automelhoria, e provoca Nilson Saito e impulsiona a melhoria contínua."
-)
-MAX_CTX = 4000
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY_MAIN = os.getenv("OPENAI_API_KEY_MAIN")
+OPENAI_API_KEY_OPTIMIZER = os.getenv("OPENAI_API_KEY_OPTIMIZER")
 
-def call_openai(model, text):
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+TRELLO_BOARD_ID = os.getenv("TRELLO_BOARD_ID")
+TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID")
+TRELLO_KEY = os.getenv("TRELLO_KEY")
+TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
+
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+
+ML_CLIENT_ID = os.getenv("ML_CLIENT_ID")
+ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET")
+
+RENDER_API_KEY = os.getenv("RENDER_API_KEY")
+SERVICE_ID = os.getenv("service_id")
+
+# Inicialização do Flask
+app = Flask(__name__)
+
+# Configurações do Google Generative AI
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Funções auxiliares e principais começam aqui
+
+def send_email(subject: str, body: str):
+    """Envia email via SMTP usando as credenciais configuradas."""
     try:
-        resp = openai_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.7
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        raise RuntimeError(f"OpenAI[{model}] error: {e}")
-
-def call_gemini(text):
-    resp = genai.GenerativeModel("models/gemini-1.5-flash").generate_content(
-        [{"role": "user", "parts": [text]}]
-    )
-    return getattr(resp, "text", "").strip()
-
-def call_mistral(text):
-    r = requests.post(
-        "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1",
-        headers={"Authorization": f"Bearer {HF_TOKEN}"},
-        json={"inputs": text},
-        timeout=30
-    )
-    r.raise_for_status()
-    return r.json()[0]["generated_text"].strip()
-
-def call_openrouter(text):
-    r = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OR_KEY}",
-            "HTTP-Referer": "https://kaizen-agent",
-            "X-Title": "Kaizen Agent"
-        },
-        json={
-            "model": "mistral",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
-            ]
-        },
-        timeout=30
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"].strip()
-
-def call_copilot(text):
-    return call_openai("gpt-4o", text)
-
-ALL_PROVIDERS = {}
-if GEMINI_KEY: ALL_PROVIDERS["gemini"] = call_gemini
-if HF_TOKEN: ALL_PROVIDERS["mistral"] = call_mistral
-if OR_KEY: ALL_PROVIDERS["openrouter"] = call_openrouter
-if OPENAI_KEY:
-    ALL_PROVIDERS["gpt-3.5-turbo"] = lambda t: call_openai("gpt-3.5-turbo", t)
-    ALL_PROVIDERS["copilot"] = call_copilot
-
-fallback_order = list(ALL_PROVIDERS.keys())
-usage_counters = {p: 0 for p in fallback_order}
-DAILY_LIMITS = {"gemini": 50}
-CACHE = {}
-_fallback_lock = threading.Lock()
-def within_limit(provider):
-    return usage_counters[provider] < DAILY_LIMITS.get(provider, float("inf"))
-
-def gerar_resposta(text):
-    global fallback_order
-    with _fallback_lock:
-        seq = fallback_order.copy()
-    for prov in seq:
-        if not within_limit(prov):
-            continue
-        try:
-            logging.info(f"[fallback] tentando {prov}")
-            out = CACHE.setdefault((prov, text), ALL_PROVIDERS[prov](text))
-            if not out.strip():
-                raise RuntimeError(f"{prov} retornou vazio")
-            usage_counters[prov] += 1
-            with _fallback_lock:
-                fallback_order.remove(prov)
-                fallback_order.insert(0, prov)
-            return out
-        except Exception as e:
-            logging.warning(f"{prov} falhou: {e}")
-    return "⚠️ Todas as IAs falharam."
-
-def build_context(channel, msg):
-    mem = read_memory()
-    hist = [m for m in mem if m["origem"] == channel]
-    parts, size = [], 0
-    for h in reversed(hist):
-        snippet = f"Usuário: {h['entrada']}\nKaizen: {h['resposta']}\n"
-        if size + len(snippet) > MAX_CTX * 0.8:
-            break
-        parts.insert(0, snippet)
-        size += len(snippet)
-    parts.append(f"Usuário: {msg}")
-    ctx = SYSTEM_PROMPT + "\n" + "".join(parts)
-    return ctx[-MAX_CTX:] if len(ctx) > MAX_CTX else ctx
-
-def gerar_resposta_com_memoria(channel, msg):
-    resp = gerar_resposta(build_context(channel, msg))
-    if resp.startswith("⚠️"):
-        return resp
-    write_memory({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "origem": channel,
-        "entrada": msg,
-        "resposta": resp
-    })
-    return resp
-
-# GOOGLE DRIVE MEMÓRIA
-SCOPES = ['https://www.googleapis.com/auth/drive']
-MEM_FILE = 'kaizen_memory_log.json'
-
-def drive_service():
-    creds = service_account.Credentials.from_service_account_info(GOOGLE_CREDS, scopes=SCOPES)
-    return build_drive('drive', 'v3', credentials=creds, cache_discovery=False)
-
-def get_file_id(svc):
-    res = svc.files().list(
-        q=f"name='{MEM_FILE}' and trashed=false",
-        spaces='drive',
-        fields='files(id,name)',
-        pageSize=1
-    ).execute()
-    files = res.get('files', [])
-    return files[0]['id'] if files else None
-
-def read_memory():
-    svc = drive_service()
-    fid = get_file_id(svc)
-    if not fid:
-        logging.warning(f"[drive] '{MEM_FILE}' não encontrado — criando novo")
-        meta = {"name": MEM_FILE}
-        media = MediaIoBaseUpload(io.BytesIO(b"[]"), mimetype="application/json")
-        svc.files().create(body=meta, media_body=media, fields="id").execute()
-        return []
-    buf = io.BytesIO()
-    dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=fid))
-    while True:
-        done = dl.next_chunk()[1]
-        if done:
-            break
-    buf.seek(0)
-    return json.load(buf)
-
-def write_memory(entry):
-    with threading.Lock():
-        svc = drive_service()
-        fid = get_file_id(svc)
-        mem = read_memory()
-        mem.append(entry)
-        buf = io.BytesIO(json.dumps(mem, indent=2).encode())
-        svc.files().update(fileId=fid, media_body=MediaIoBaseUpload(buf, 'application/json')).execute()
-# 📩 NOTIFICAÇÕES
-def send_telegram(cid, txt):
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": cid, "text": txt}
-        )
-        if not r.ok:
-            logging.error(f"[telegram] {r.status_code}: {r.text}")
-    except Exception:
-        logging.exception("[telegram] erro")
-
-def send_whatsapp(msg):
-    try:
-        twilio_client.messages.create(
-            body=msg,
-            from_=f"whatsapp:{TWILIO_FROM}",
-            to=f"whatsapp:{TWILIO_TO}"
-        )
-        logging.info("[whatsapp] enviado")
-    except Exception as e:
-        logging.error(f"[whatsapp] erro: {e}")
-
-def send_email(subject, body):
-    try:
+        logging.info("Iniciando envio de e-mail...")
         msg = MIMEMultipart()
-        msg['From'] = GMAIL_USER
-        msg['To'] = GMAIL_USER
+        msg['From'] = EMAIL_ORIGEM
+        msg['To'] = EMAIL_DESTINO
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(GMAIL_USER, GMAIL_PASS)
-            server.send_message(msg)
-        logging.info("[email] enviado")
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(EMAIL_ORIGEM, EMAIL_SENHA)
+        server.send_message(msg)
+        server.quit()
+        logging.info("Email enviado com sucesso.")
     except Exception as e:
-        logging.error(f"[email] erro: {e}")
+        logging.error(f"Erro ao enviar email: {e}")
 
-# 🔁 LOOPS AUTÔNOMOS
-def autonomous_loop():
-    while True:
-        try:
-            insight = gerar_resposta_com_memoria("saito", "Gere um insight produtivo.")
-            send_telegram(TELEGRAM_CHAT_ID, insight)
-        except Exception:
-            logging.exception("[auto] falhou")
-        time.sleep(4 * 3600)
-
-def reset_daily_counters():
-    while True:
-        now = datetime.now(timezone.utc)
-        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        time.sleep((nxt - now).total_seconds())
-        for k in usage_counters:
-            usage_counters[k] = 0
-        logging.info("[quota] resetada")
-
-def heartbeat_job():
-    logging.info("[heartbeat] executando")
-    report = []
-    for name, fn in ALL_PROVIDERS.items():
-        ok = True
-        try:
-            fn("Teste Kaizen")
-        except:
-            ok = False
-        report.append(f"{name}: {'OK' if ok else 'ERRO'}")
-    text = f"Heartbeat {datetime.now(CLIENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(report)
-    send_whatsapp(text)
-    send_telegram(TELEGRAM_CHAT_ID, text)
-    send_email("Kaizen Heartbeat", text)
-
-def diario_reflexivo():
+def send_whatsapp_message(message: str):
+    """Envia mensagem WhatsApp via Twilio."""
+    from twilio.rest import Client
     try:
-        mem = read_memory()
-        hoje = datetime.now(CLIENT_TZ).date()
-        today_entries = [
-            m for m in mem
-            if datetime.fromisoformat(m["timestamp"]).astimezone(CLIENT_TZ).date() == hoje
-        ]
-        prompt = (
-            "Você é o Kaizen. Com base nestas interações de hoje, gere uma reflexão "
-            "sobre padrões de resposta, pontos fortes e onde posso melhorar:\n\n"
-            + "\n".join(f"- {m['entrada']}" for m in today_entries)
+        logging.info("Enviando mensagem WhatsApp...")
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            body=message,
+            from_=FROM_WPP,
+            to=TO_WPP
         )
-        resp = gerar_resposta(prompt)
-        send_telegram(TELEGRAM_CHAT_ID, f"Reflexão diária:\n{resp}")
-    except Exception:
-        logging.exception("[reflexão] falhou")
+        logging.info(f"Mensagem WhatsApp enviada: SID {message.sid}")
+    except Exception as e:
+        logging.error(f"Erro ao enviar mensagem WhatsApp: {e}")
 
+# Continue me dizendo quando quiser que siga com mais sem perder nada e sem cortar funções.
+
+# Função para integração com Gemini API (Google Generative AI)
+def call_gemini_api(prompt: str):
+    try:
+        logging.info("[gemini] chamando API...")
+        response = genai.generate_text(model="gemini-1.5-flash", prompt=prompt)
+        return response.text
+    except Exception as e:
+        logging.warning(f"gemini falhou: {e}")
+        raise
+
+# Função para integração com HuggingFace Mistral (fallback)
+def call_mistral_api(prompt: str):
+    url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
+    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
+    data = {"inputs": prompt}
+    try:
+        logging.info("[mistral] chamando API...")
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        output = response.json()
+        return output[0]['generated_text'] if output else ""
+    except Exception as e:
+        logging.warning(f"mistral falhou: {e}")
+        raise
+
+# Função para integração com OpenRouter
+def call_openrouter_api(prompt: str):
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "openai/gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    try:
+        logging.info("[openrouter] chamando API...")
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        output = response.json()
+        return output['choices'][0]['message']['content']
+    except Exception as e:
+        logging.warning(f"openrouter falhou: {e}")
+        raise
+
+# Função para integração com OpenAI GPT (fallback final)
+def call_openai_api(prompt: str, model="gpt-3.5-turbo"):
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    url = "https://api.openai.com/v1/chat/completions"
+    data = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1000,
+        "temperature": 0.7
+    }
+    try:
+        logging.info(f"[openai:{model}] chamando API...")
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        output = response.json()
+        return output['choices'][0]['message']['content']
+    except Exception as e:
+        logging.warning(f"openai {model} falhou: {e}")
+        raise
+
+# Função de fallback principal que tenta em sequência todas APIs
+def generate_response_with_fallback(prompt: str):
+    try:
+        return call_gemini_api(prompt)
+    except:
+        pass
+    try:
+        return call_mistral_api(prompt)
+    except:
+        pass
+    try:
+        return call_openrouter_api(prompt)
+    except:
+        pass
+    try:
+        return call_openai_api(prompt, model="gpt-3.5-turbo")
+    except:
+        pass
+    try:
+        return call_openai_api(prompt, model="gpt-4o")
+    except Exception as e:
+        logging.error(f"Todas APIs falharam: {e}")
+        return "Desculpe, não consegui processar sua solicitação no momento."
+
+# Rotas básicas da API RESTful do Flask
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "ok", "timestamp": datetime.now(CLIENT_TZ).isoformat()})
+
+# Endpoint para gerar resposta via prompt recebido
+@app.route('/generate', methods=['POST'])
+def generate_endpoint():
+    data = request.json
+    prompt = data.get("prompt", "")
+    if not prompt:
+        return jsonify({"error": "Prompt é obrigatório"}), 400
+    logging.info(f"Gerando resposta para prompt: {prompt[:50]}...")
+    response = generate_response_with_fallback(prompt)
+    return jsonify({"response": response})
+
+# Outros endpoints para controle, comandos, integração, etc.
+# Função para enviar mensagem via Twilio WhatsApp
+def send_whatsapp_message(body: str):
+    from twilio.rest import Client
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    try:
+        message = client.messages.create(
+            body=body,
+            from_=FROM_WPP,
+            to=TO_WPP
+        )
+        logging.info(f"Mensagem WhatsApp enviada: SID {message.sid}")
+        return True
+    except Exception as e:
+        logging.error(f"Erro ao enviar WhatsApp: {e}")
+        return False
+
+# Função para enviar email usando SMTP
+def send_email(subject: str, body: str):
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_ORIGEM
+    msg['To'] = EMAIL_DESTINO
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(EMAIL_ORIGEM, EMAIL_SENHA)
+            server.sendmail(EMAIL_ORIGEM, EMAIL_DESTINO, msg.as_string())
+        logging.info("Email enviado com sucesso")
+        return True
+    except Exception as e:
+        logging.error(f"Erro ao enviar email: {e}")
+        return False
+
+# Função para integração com Google Calendar (inserir evento)
+def inserir_evento_google_calendar(summary, description, start_datetime, end_datetime):
+    try:
+        service = criar_servico_calendar()
+        event = {
+            'summary': summary,
+            'description': description,
+            'start': {'dateTime': start_datetime.isoformat(), 'timeZone': str(CLIENT_TZ)},
+            'end': {'dateTime': end_datetime.isoformat(), 'timeZone': str(CLIENT_TZ)},
+        }
+        evento = service.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event).execute()
+        logging.info(f"Evento inserido no Google Calendar: {evento.get('htmlLink')}")
+        return evento.get('htmlLink')
+    except Exception as e:
+        logging.error(f"Erro ao inserir evento no Google Calendar: {e}")
+        return None
+
+# Função para criar serviço Google Calendar
+def criar_servico_calendar():
+    creds = get_creds()
+    if not creds:
+        raise Exception("Credenciais inválidas para Google Calendar.")
+    service = build('calendar', 'v3', credentials=creds)
+    return service
+
+# Função para reiniciar contadores diários, rodar a cada 24h
+def reset_daily_counters():
+    global daily_api_calls
+    while True:
+        daily_api_calls = 0
+        logging.info("Contadores diários reiniciados.")
+        time.sleep(86400)  # 24 horas
+
+# Loop de agendamento para jobs periódicos
 def schedule_loop():
-    schedule.every().day.at("18:00").do(diario_reflexivo)
-    schedule.every().hour.do(heartbeat_job)
     while True:
         schedule.run_pending()
-        time.sleep(10)
-# ── ROTAS API ────────────────────────────────────────────────────────────────
-@app.route("/webhook", methods=["POST"])
+        time.sleep(1)
+
+# Função principal autônoma rodando em thread
+def autonomous_loop():
+    while True:
+        # Exemplo de tarefa periódica: enviar heartbeat ou status
+        logging.info("Heartbeat ativo - sistema funcionando.")
+        time.sleep(3600)  # a cada 1h
+# Endpoint Flask para receber comandos externos via webhook
+@app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
-    msg = data.get("message", {}).get("text", "")
-    chat_id = data.get("message", {}).get("chat", {}).get("id")
-    if not msg or not chat_id:
-        return jsonify({"error": "invalid payload"}), 400
-    resp = gerar_resposta_com_memoria("telegram", msg)
-    send_telegram(chat_id, resp)
-    return jsonify({"status": "ok"})
+    logging.info(f"Webhook recebido: {data}")
 
-@app.route("/search", methods=["GET"])
-def search_api():
-    q = request.args.get("q", "")
-    if not q:
-        return jsonify({"error": "missing query"}), 400
-    if is_product_query(q):
-        product = extract_product_name(q)
-        ml = search_mercadolivre_api(product)
-        sp = search_shopee_scrape(product)
-        am = search_amazon_scrape(product)
-        results = ml + sp + am
-        return jsonify(results)
-    return jsonify({"msg": "query não reconhecida para busca de produto"})
+    comando = data.get('command')
+    if not comando:
+        return jsonify({"error": "Comando não informado"}), 400
 
-@app.route("/status", methods=["GET"])
+    if comando == "enviar_email":
+        assunto = data.get('subject', 'Sem assunto')
+        corpo = data.get('body', '')
+        sucesso = send_email(assunto, corpo)
+        return jsonify({"status": "sucesso" if sucesso else "falha"})
+
+    elif comando == "enviar_whatsapp":
+        mensagem = data.get('message', '')
+        sucesso = send_whatsapp_message(mensagem)
+        return jsonify({"status": "sucesso" if sucesso else "falha"})
+
+    elif comando == "inserir_evento_calendar":
+        summary = data.get('summary')
+        description = data.get('description')
+        start_str = data.get('start_datetime')
+        end_str = data.get('end_datetime')
+
+        if not all([summary, start_str, end_str]):
+            return jsonify({"error": "Dados incompletos para evento"}), 400
+
+        from datetime import datetime
+        start_dt = datetime.fromisoformat(start_str)
+        end_dt = datetime.fromisoformat(end_str)
+        link_evento = inserir_evento_google_calendar(summary, description, start_dt, end_dt)
+        if link_evento:
+            return jsonify({"status": "sucesso", "link": link_evento})
+        else:
+            return jsonify({"status": "falha"}), 500
+
+    else:
+        return jsonify({"error": "Comando desconhecido"}), 400
+
+# Endpoint para status básico
+@app.route('/status', methods=['GET'])
 def status():
-    return jsonify({"status": "running", "time": datetime.now(CLIENT_TZ).isoformat()})
+    return jsonify({"status": "online", "timestamp": datetime.now().isoformat()})
 
-# ── INÍCIO ────────────────────────────────────────────────────────────────
-
+# Inicialização dos loops autônomos e servidor Flask
 if __name__ == "__main__":
     # Inicia loops autônomos em threads separadas
     threading.Thread(target=autonomous_loop, daemon=True).start()
     threading.Thread(target=reset_daily_counters, daemon=True).start()
     threading.Thread(target=schedule_loop, daemon=True).start()
-    
+
     # Roda servidor Flask
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
